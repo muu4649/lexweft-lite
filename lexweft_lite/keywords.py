@@ -116,6 +116,17 @@ def _documents_for_query(store: Store, query: str, limit: int = 400) -> list[int
     return seen
 
 
+_KANJI_ONLY = re.compile(r"^[一-龥々]+$")
+
+
+def _weight(term: str) -> float:
+    if term.isascii():
+        return 0.9 if term.isupper() else 0.5
+    if _KANJI_ONLY.match(term) and len(term) <= 2:
+        return 0.35
+    return 0.9 if len(term) == 3 else 1.2
+
+
 def graph(store: Store, limit: int = 80, query: str | None = None, edges_per_node: int = 4) -> dict[str, Any]:
     """よく出る語と、一緒に出る語どうしの辺. query を渡すと、その問いに当たる資料だけで作る."""
     remaining = len(pending(store))
@@ -136,8 +147,9 @@ def graph(store: Store, limit: int = 80, query: str | None = None, edges_per_nod
     rows = store.conn.execute(
         f"SELECT term, COUNT(*) AS df, SUM(n) AS tf FROM doc_terms{where} GROUP BY term HAVING df >= ? AND df <= ?",
         [*params, min_df, max_df]).fetchall()
-    # よく出るが、どの資料にも出る語ではないものを上に (tf × idf)
-    scored = sorted(rows, key=lambda r: -(r["tf"] * math.log(1 + n_docs / r["df"])))
+    # 多くの資料に出るが、どの資料にも出る語ではないものを上に (資料数 × idf)。
+    # 2 文字の漢字語 (確認・判断など) と英語の小文字の語は一般語になりやすいので軽くし、複合語・カタカナ語を重くする
+    scored = sorted(rows, key=lambda r: -(r["df"] * math.log(1 + n_docs / r["df"]) * _weight(r["term"]) * (1 + math.log(r["tf"] / r["df"]))))
     # 片方がもう片方を含む語 (「電池」と「蓄電池」) は、長いほうが少なくとも同じくらい出ていれば短いほうを外す
     chosen: list[Any] = []
     for r in scored:
