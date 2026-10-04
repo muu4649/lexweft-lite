@@ -94,3 +94,28 @@ def test_serve_port_fallback(home, monkeypatch):
     finally:
         busy.close()
     assert seen["port"] != port
+
+
+def test_serve_for_app_writes_ready_file(home, tmp_path):
+    import json
+    import os
+    import subprocess
+    import sys
+    import time
+    import urllib.request
+
+    ready = tmp_path / "ready.json"
+    proc = subprocess.Popen([sys.executable, "-m", "lexweft_lite.cli", "serve", "--no-browser", "--ready-file", str(ready),
+                             "--parent-pid", str(os.getpid())], env={**os.environ, "LEXWEFT_HOME": str(home)})
+    try:
+        for _ in range(100):
+            if ready.exists():
+                break
+            time.sleep(0.1)
+        url = json.loads(ready.read_text())["url"]
+        assert url.startswith("http://127.0.0.1:")
+        with urllib.request.urlopen(url + "api/overview", timeout=5) as r:
+            assert json.loads(r.read())["version"]
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)

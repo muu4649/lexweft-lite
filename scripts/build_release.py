@@ -21,9 +21,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TOP = "LeXWeftLite"
-INCLUDE_PREFIXES = ("lexweft_lite/", "samples/")
+INCLUDE_PREFIXES = ("lexweft_lite/", "samples/", "packaging/")
 INCLUDE_FILES = {"pyproject.toml", "uv.lock", "install.sh", "install.ps1", "README.md", "START_HERE.html", "TERMS.txt"}
-EXECUTABLE = {"install.sh"}
+EXECUTABLE = {"install.sh", "packaging/macos/build_app.sh"}
 
 
 def version() -> str:

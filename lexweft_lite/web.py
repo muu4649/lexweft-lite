@@ -308,7 +308,48 @@ def _lite_running(port: int) -> bool:
         return False
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
+def _serve_for_app(host: str, ready_file: str, parent_pid: int | None) -> None:
+    """Mac アプリから起動されたとき: 空いているポートで開き、その URL を ready_file に書く. 親 (アプリ) が終わったら止まる."""
+    import json
+    import os
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.bind((host, 0))
+    port = sock.getsockname()[1]
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+
+    def announce() -> None:
+        while not server.started and not server.should_exit:
+            time.sleep(0.05)
+        if server.started:
+            tmp = Path(ready_file + ".tmp")
+            tmp.write_text(json.dumps({"url": f"http://127.0.0.1:{port}/"}), encoding="utf-8")
+            tmp.replace(ready_file)   # 書きかけのファイルを親に見せない
+
+    def watch_parent() -> None:
+        while not server.should_exit:
+            try:
+                os.kill(parent_pid, 0)
+            except OSError:
+                server.should_exit = True
+                return
+            time.sleep(1.0)
+
+    threading.Thread(target=announce, daemon=True).start()
+    if parent_pid:
+        threading.Thread(target=watch_parent, daemon=True).start()
+    print(f"LeXWeft Lite: http://127.0.0.1:{port}/  (保存先 {config.home()})", flush=True)
+    server.run(sockets=[sock])
+
+
+def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+          ready_file: str | None = None, parent_pid: int | None = None) -> None:
     import threading
     import webbrowser
 
@@ -316,6 +357,9 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
 
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("LeXWeft Lite は手元の PC (127.0.0.1) でだけ動かします")
+    if ready_file:
+        _serve_for_app(host, ready_file, parent_pid)
+        return
     if not _port_free(host, port):
         if _lite_running(port):
             url = f"http://127.0.0.1:{port}/"
