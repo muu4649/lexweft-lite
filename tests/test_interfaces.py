@@ -76,3 +76,21 @@ def test_cli(home, sample_file, capsys):
     assert cfg["mcpServers"]["lexweft-lite"]["args"] == ["mcp"]
     assert cli.main(["export", "--out", str(home / "ex")]) == 0
     assert (home / "ex" / "layer.md").exists() and list((home / "ex" / "documents").glob("*.md"))
+
+
+def test_serve_port_fallback(home, monkeypatch):
+    import socket
+
+    from lexweft_lite import web
+
+    busy = socket.socket()
+    busy.bind(("127.0.0.1", 0))
+    busy.listen()
+    port = busy.getsockname()[1]
+    seen = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, host, port, log_level: seen.update(port=port))
+    try:
+        web.serve(port=port, open_browser=False)
+    finally:
+        busy.close()
+    assert seen["port"] != port

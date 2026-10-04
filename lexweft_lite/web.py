@@ -285,6 +285,29 @@ def index() -> FileResponse:
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 
+def _port_free(host: str, port: int) -> bool:
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind((host, port))
+            return True
+        except OSError:
+            return False
+
+
+def _lite_running(port: int) -> bool:
+    """そのポートで LeXWeft Lite が既に動いているか."""
+    import json
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/overview", timeout=1.5) as r:
+            return "distribution" in json.loads(r.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) -> None:
     import threading
     import webbrowser
@@ -293,6 +316,18 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True) 
 
     if host not in ("127.0.0.1", "localhost", "::1"):
         raise SystemExit("LeXWeft Lite は手元の PC (127.0.0.1) でだけ動かします")
+    if not _port_free(host, port):
+        if _lite_running(port):
+            url = f"http://127.0.0.1:{port}/"
+            print(f"LeXWeft Lite はもう動いています: {url}")
+            if open_browser:
+                webbrowser.open(url)
+            return
+        free = next((p for p in range(port + 1, port + 30) if _port_free(host, p)), None)
+        if free is None:
+            raise SystemExit(f"ポート {port} から {port + 29} がすべて使われています。--port で空いている番号を指定してください")
+        print(f"ポート {port} は別のアプリが使っているので、{free} で開きます")
+        port = free
     url = f"http://127.0.0.1:{port}/"
     if open_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
