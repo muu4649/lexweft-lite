@@ -20,6 +20,7 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "Python と必要なライブラリを .venv に入れます (初回は数分かかります)"
+$env:UV_PYTHON_PREFERENCE = "only-managed"
 uv sync --python 3.12 --no-dev
 
 $Exe = Join-Path $Here ".venv\Scripts\lexweft.exe"

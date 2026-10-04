@@ -5,18 +5,22 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LeXWeft Lite</title>
 <link rel="stylesheet" href="/static/app.css">
+<script>try { const t = localStorage.getItem('lw-theme'); if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t; } catch (e) {}</script>
 </head>
 <body>
 <header class="top">
   <div class="brand">LeXWeft <span>Lite</span></div>
   <nav id="tabs">
-    <button data-tab="docs">資料</button>
-    <button data-tab="layer">意味層</button>
+    <button data-tab="home">取り込み</button>
+    <button data-tab="map">地図</button>
     <button data-tab="graph">つながり</button>
+    <button data-tab="docs">資料</button>
     <button data-tab="search">検索</button>
+    <button data-tab="layer">課題と解決手段</button>
     <button data-tab="connect">LLM と接続</button>
   </nav>
   <div id="stats" class="stats"></div>
+  <select id="theme" title="表示"><option value="auto">表示: 自動</option><option value="light">表示: ライト</option><option value="dark">表示: ダーク</option></select>
   <a id="feedback" class="btn feedback" target="_blank" rel="noopener" hidden>感想を送る</a>
 </header>
 <main id="main"></main>

@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--version", action="version", version=__version__)
     sub = p.add_subparsers(dest="cmd", required=True)
     sp = sub.add_parser("serve", help="画面を開く (http://127.0.0.1:8765/)")
-    sp.add_argument("--port", type=int, default=8765)
+    sp.add_argument("--port", type=int, default=None, help="使う番号 (省略すると 8765 から空いている番号)")
     sp.add_argument("--no-browser", action="store_true")
     sp.add_argument("--ready-file", help=argparse.SUPPRESS)   # Mac アプリ用: 空いているポートで開き、URL をこのファイルに書く
     sp.add_argument("--parent-pid", type=int, help=argparse.SUPPRESS)

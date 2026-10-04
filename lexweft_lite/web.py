@@ -8,11 +8,12 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__, config
+from . import clusters as cl
 from . import keywords as kw
 from . import layer as ly
 from . import runtime
@@ -20,6 +21,7 @@ from .ingest import ingest, ingest_text
 from .loaders import SUPPORTED_SUFFIXES
 from .markdown import document_markdown, layer_markdown, remove_document_file
 from .search import search as _search
+from .store import nfc
 
 WEB_DIR = Path(__file__).parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "testserver"}
@@ -33,6 +35,7 @@ def _backfill_keywords() -> None:
         try:
             while kw.backfill(runtime.store(), limit=50):
                 pass
+            cl.refresh_registered(runtime.store())   # 資料が変わったフォルダの、まとまりと地図を作り直す
         except Exception:  # noqa: BLE001  画面の起動は止めない
             pass
 
@@ -60,6 +63,8 @@ async def guard(request: Request, call_next):  # type: ignore[no-untyped-def]
     resp = await call_next(request)
     if request.url.path.startswith("/api/") or request.url.path in ("/", "/index.html"):
         resp.headers["Cache-Control"] = "no-store"
+    elif request.url.path.startswith("/static/"):
+        resp.headers["Cache-Control"] = "no-cache"   # 版を上げたときに古い画面が残らないように (毎回確かめる)
     return resp
 
 
@@ -77,7 +82,8 @@ async def _value_error(_: Request, exc: ValueError) -> JSONResponse:
 @app.get("/api/overview")
 def overview() -> dict[str, Any]:
     s = runtime.store()
-    return {"version": __version__, "home": str(config.home()), "distribution": config.distribution(), "stats": s.stats(), "types": ly.list_types(s),
+    return {"version": __version__, "home": str(config.home()), "distribution": config.distribution(), "stats": s.stats(), "scopes": cl.scopes(s),
+            "sources": len(s.list_sources()), "types": ly.list_types(s),
             "relation_kinds": list(ly.RELATION_KINDS), "documents_without_concepts": ly.documents_without_concepts(s, limit=10)}
 
 
@@ -125,6 +131,27 @@ def delete_under(body: PrefixIn) -> dict[str, Any]:
     return {"deleted": len(ids)}
 
 
+@app.get("/api/documents/outside")
+def outside() -> dict[str, Any]:
+    return {"documents": len(runtime.store().documents_outside_sources())}
+
+
+@app.post("/api/documents/delete-outside")
+def delete_outside() -> dict[str, Any]:
+    """登録したフォルダの外の資料をまとめて消す (元のファイルは消さない)."""
+    s = runtime.store()
+    if not s.list_sources():
+        raise ValueError("フォルダを 1 つ以上登録してから使ってください")
+    ids = s.documents_outside_sources()
+    s.delete_documents(ids)
+    for i in ids:
+        remove_document_file(i, runtime.markdown_dir())
+    if len(ids) >= 200:
+        s.compact()
+    cl.refresh_registered(s)
+    return {"deleted": len(ids)}
+
+
 @app.get("/api/scan")
 def scan(path: str) -> dict[str, Any]:
     from .loaders import scan as _scan
@@ -156,6 +183,97 @@ def pick_folder() -> dict[str, Any]:
         return {"path": None}
     path = (r.stdout or "").strip()
     return {"path": path or None}
+
+
+class SourceIn(BaseModel):
+    path: str | None = None
+    delete_documents: bool = False
+
+
+@app.get("/api/sources")
+def sources() -> list[dict[str, Any]]:
+    return runtime.store().list_sources()
+
+
+@app.post("/api/sources")
+def add_source(body: SourceIn) -> dict[str, Any]:
+    """フォルダを登録して取り込む."""
+    from . import jobs
+
+    path = nfc(str(Path((body.path or "").strip()).expanduser()))
+    if not body.path or not Path(path).is_dir():
+        raise ValueError("フォルダが見つかりません")
+    if Path(path) in (Path.home(), Path("/"), Path(path).anchor and Path(Path(path).anchor)):
+        raise ValueError("ホームフォルダや PC 全体は登録できません。資料の入ったフォルダを選んでください")
+    runtime.store().add_source(path.rstrip("/"))
+    return jobs.start(path.rstrip("/")).view()
+
+
+@app.post("/api/sources/run")
+def run_sources(body: SourceIn) -> dict[str, Any]:
+    """登録したフォルダをもう一度読み、新しいファイル・変わったファイルを取り込む (path が無ければ全部)."""
+    from . import jobs
+
+    paths = [body.path] if body.path else [s["path"] for s in runtime.store().list_sources() if s["exists"]]
+    return jobs.start(paths).view()
+
+
+@app.post("/api/sources/remove")
+def remove_source(body: SourceIn) -> dict[str, Any]:
+    s = runtime.store()
+    ok = s.remove_source((body.path or "").rstrip("/"))
+    deleted = 0
+    if ok and body.delete_documents:
+        ids = s.delete_documents_under(body.path or "")
+        for i in ids:
+            remove_document_file(i, runtime.markdown_dir())
+        deleted = len(ids)
+        if deleted >= 200:
+            s.compact()
+    s.conn.execute("DELETE FROM lscopes WHERE scope = ?", ((body.path or "").rstrip("/"),))
+    s.conn.commit()
+    cl.refresh_registered(s)
+    return {"removed": ok, "deleted": deleted}
+
+
+class ScopeIn(BaseModel):
+    scope: str = cl.ALL
+
+
+@app.get("/api/scopes")
+def scopes() -> list[dict[str, Any]]:
+    """意味層を作る範囲 (登録したフォルダと、すべての資料) と、それぞれの状態."""
+    return cl.scopes(runtime.store())
+
+
+@app.get("/api/layer")
+def layer_status(scope: str = cl.ALL) -> dict[str, Any]:
+    return cl.status(runtime.store(), scope)
+
+
+@app.post("/api/layer/rebuild")
+def layer_rebuild(body: ScopeIn) -> dict[str, Any]:
+    started = cl.build_in_background(runtime.store(), body.scope, force=True)
+    return {"started": started, **cl.status(runtime.store(), body.scope)}
+
+
+@app.get("/api/map")
+def map_data(scope: str = cl.ALL) -> dict[str, Any]:
+    s = runtime.store()
+    st = cl.status(s, scope)
+    if (st["stale"] or not st["built_at"]) and st["documents_now"]:
+        cl.build_in_background(s, scope)   # まだ無い・古い範囲は、開いたときに作る
+    return cl.map_data(s, scope)
+
+
+@app.get("/api/clusters/{cluster_id}")
+def cluster(cluster_id: int, scope: str = cl.ALL) -> dict[str, Any]:
+    return cl.cluster_detail(runtime.store(), cluster_id, scope)
+
+
+@app.get("/api/documents/{document_id}/similar")
+def similar(document_id: int, scope: str | None = None) -> list[dict[str, Any]]:
+    return cl.similar_documents(runtime.store(), document_id, scope)
 
 
 @app.post("/api/jobs")
@@ -372,8 +490,19 @@ def graph(documents: bool = True, type: str | None = None) -> dict[str, Any]:
 
 
 @app.get("/api/keywords/graph")
-def keywords_graph(limit: int = 80, q: str | None = None) -> dict[str, Any]:
-    return kw.graph(runtime.store(), limit=max(10, min(limit, 200)), query=q)
+def keywords_graph(limit: int = 80, q: str | None = None, scope: str = cl.ALL) -> dict[str, Any]:
+    s = runtime.store()
+    docs = None if scope == cl.ALL else cl.scope_documents(s, scope)
+    g = kw.graph(s, limit=max(10, min(limit, 200)), query=q, documents=docs)
+    # 語の色を、その語がいちばん強く出るまとまりの色にする
+    cs = {c["id"]: c for c in cl.clusters(s, scope)}
+    of = cl.cluster_of_terms(s, [n["label"] for n in g["nodes"]], scope)
+    for n in g["nodes"]:
+        c = cs.get(of.get(n["label"], -1))
+        if c:
+            n["color"], n["cluster"], n["type"] = c["color"], c["id"], c["label"]
+    g["clusters"] = [{"id": c["id"], "label": c["label"], "color": c["color"]} for c in cs.values()]
+    return g
 
 
 @app.get("/api/keywords/documents")
@@ -387,9 +516,12 @@ def export_layer() -> str:
 
 
 # ---------------- 画面 ----------------
-@app.get("/")
-def index() -> FileResponse:
-    return FileResponse(WEB_DIR / "index.html")
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    """画面の入口. 画面のファイルが変わったら必ず読み直されるよう、更新時刻を印に付ける."""
+    stamp = int(max((WEB_DIR / n).stat().st_mtime for n in ("app.js", "app.css", "index.html")))
+    html = (WEB_DIR / "index.html").read_text(encoding="utf-8")
+    return html.replace("/static/app.js", f"/static/app.js?v={stamp}").replace("/static/app.css", f"/static/app.css?v={stamp}")
 
 
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
@@ -399,6 +531,7 @@ def _port_free(host: str, port: int) -> bool:
     import socket
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)   # 閉じたばかりの接続が残っていても使えるとみなす (uvicorn と同じ)
         try:
             sock.bind((host, port))
             return True
@@ -458,8 +591,9 @@ def _serve_for_app(host: str, ready_file: str, parent_pid: int | None) -> None:
     server.run(sockets=[sock])
 
 
-def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
+def serve(host: str = "127.0.0.1", port: int | None = None, open_browser: bool = True,
           ready_file: str | None = None, parent_pid: int | None = None) -> None:
+    """画面を開く. port を指定しなければ 8765 から空いている番号を探す (指定したらその番号だけを使う)."""
     import threading
     import webbrowser
 
@@ -470,7 +604,11 @@ def serve(host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True,
     if ready_file:
         _serve_for_app(host, ready_file, parent_pid)
         return
+    explicit = port is not None
+    port = port or 8765
     if not _port_free(host, port):
+        if explicit:
+            raise SystemExit(f"ポート {port} は使われています")
         if _lite_running(port):
             url = f"http://127.0.0.1:{port}/"
             print(f"LeXWeft Lite はもう動いています: {url}")

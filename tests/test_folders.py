@@ -77,3 +77,41 @@ def test_jobs_scan_and_delete_under(home, tmp_path):
     (tmp_path / "notes2" / "d.md").write_text("別のフォルダ", encoding="utf-8")
     ingest(runtime.store(), str(tmp_path / "notes2"))
     assert c.post("/api/documents/delete-under", json={"prefix": str(tmp_path / "notes")}, headers=H).json()["deleted"] == 0
+
+
+def test_nfd_paths_match_nfc(home, tmp_path):
+    import unicodedata
+
+    from lexweft_lite import clusters as cl
+
+    name = "IPランドスケープ事例"
+    d = tmp_path / unicodedata.normalize("NFD", name)
+    d.mkdir()
+    (d / "a.md").write_text("# a\n\nランドスケープの事例。", encoding="utf-8")
+    s = runtime.store()
+    ingest(s, str(d))
+    src = s.list_documents()[0]["source"]
+    assert src == unicodedata.normalize("NFC", src)
+    nfc_dir = str(tmp_path / name)
+    assert cl.scope_documents(s, nfc_dir) and cl.scope_documents(s, unicodedata.normalize("NFD", nfc_dir))
+
+
+def test_delete_outside_sources(home, tmp_path):
+    from lexweft_lite.web import app
+
+    _tree(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "x.md").write_text("# x\n\n別の場所の資料", encoding="utf-8")
+    s = runtime.store()
+    ingest(s, str(tmp_path / "notes"))
+    ingest(s, str(other))
+    from lexweft_lite.ingest import ingest_text
+
+    ingest_text(s, "メモ", "貼り付けた文章")
+    c = TestClient(app)
+    assert c.post("/api/documents/delete-outside", json={}, headers=H).status_code == 400   # 登録が無いと使えない
+    s.add_source(str(tmp_path / "notes"))
+    assert c.get("/api/documents/outside").json()["documents"] == 1
+    assert c.post("/api/documents/delete-outside", json={}, headers=H).json()["deleted"] == 1
+    assert s.count_documents() == 4   # notes の 3 件と貼り付けた文章は残る

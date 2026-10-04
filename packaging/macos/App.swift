@@ -42,6 +42,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         webView.navigationDelegate = self
         webView.uiDelegate = self
         webView.autoresizingMask = [.width, .height]
+        webView.underPageBackgroundColor = .windowBackgroundColor   // 読み込み中に白く光らないように (OS の明暗に合わせる)
 
         window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 860),
                           styleMask: [.titled, .closable, .miniaturizable, .resizable],
@@ -298,7 +299,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
 
     func splash(_ message: String) {
         let html = """
-        <html lang="ja"><body style="font:15px -apple-system;background:#f7f7f5;color:#1f2328;padding:64px">
+        <html lang="ja"><head><meta name="color-scheme" content="light dark"><style>body{background:#f7f7f5;color:#1f2328}@media (prefers-color-scheme: dark){body{background:#15171a;color:#e6e6e6}}</style></head><body style="font:15px -apple-system;padding:64px">
         <h2 style="font-weight:600">LeXWeft <span style="color:#0e7490">Lite</span></h2><p style="white-space:pre-line">\(message)</p></body></html>
         """
         webView.loadHTMLString(html, baseURL: nil)

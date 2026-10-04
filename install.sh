@@ -19,7 +19,8 @@ if ! command -v uv >/dev/null 2>&1; then
 fi
 
 echo "Python と必要なライブラリを .venv に入れます (初回は数分かかります)"
-uv sync --python 3.12 --no-dev
+# Python は uv が用意するもの (この Mac の CPU 向け) を使う. 古い Intel 用の Python が入っていても、それには頼らない
+UV_PYTHON_PREFERENCE=only-managed uv sync --python 3.12 --no-dev
 
 LAUNCHER="$HERE/LeXWeft Lite.command"
 cat > "$LAUNCHER" <<LAUNCH

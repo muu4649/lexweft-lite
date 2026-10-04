@@ -9,6 +9,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
+from . import clusters as cl
 from . import keywords as kw
 from . import layer as ly
 from . import runtime
@@ -17,8 +18,9 @@ from .markdown import document_markdown, layer_markdown
 from .search import search as _search
 
 INSTRUCTIONS = (
-    "LeXWeft Lite は、利用者が入れた資料 (段落に番号 [¶n] が付いた Markdown) と、その資料から作る意味層 "
-    "(型ごとの概念、別名、根拠の段落、概念どうしの関係) を持つローカルの知識ベースです。"
+    "LeXWeft Lite は、利用者が入れた資料 (段落に番号 [¶n] が付いた Markdown) と、その資料から作る意味層を持つローカルの知識ベースです。"
+    "意味層には、取り込み時に自動で作る部分 (資料のまとまり lw_clusters、キーワードのつながり lw_keywords) と、"
+    "あなたが書く部分 (型ごとの概念、別名、根拠の段落、概念どうしの関係) があります。"
     "意味層はあなた (LLM) が書きます。既定の型は「課題」と「解決手段」で、必要なら型を足せます。"
     "書くときは必ず根拠の段落番号を付け、資料に書かれていないことは書かないでください。"
     "概念を足す前に lw_list_concepts で同じ意味の概念が無いか確かめ、あれば同じ名前を使うか別名として足します。"
@@ -85,6 +87,40 @@ def lw_keywords(query: str | None = None, limit: int = 60) -> dict[str, Any]:
     g = kw.graph(runtime.store(), limit=limit, query=query)
     return {"documents": g["documents"], "keywords": [{"term": n["label"], "documents": n["df"]} for n in g["nodes"]],
             "pairs": [{"a": e["source"][2:], "b": e["target"][2:], "documents": e["documents"]} for e in g["edges"]]}
+
+
+@server.tool()
+def lw_scopes() -> list[dict[str, Any]]:
+    """意味層の範囲 (登録したフォルダと、すべての資料) の一覧. lw_clusters に scope として渡す."""
+    return cl.scopes(runtime.store())
+
+
+@server.tool()
+def lw_clusters(scope: str | None = None) -> dict[str, Any]:
+    """資料のまとまり (自動で作ったクラスター) の一覧. 各まとまりの説明の語、資料数を返す. 全体像をつかむときに最初に呼ぶ.
+    scope は登録したフォルダのパス (lw_scopes で分かる)。省略すると最初に登録したフォルダ (無ければすべての資料)."""
+    s = runtime.store()
+    if not scope:
+        srcs = s.list_sources()
+        scope = srcs[0]["path"] if srcs else cl.ALL
+    return {"status": cl.status(s, scope), "clusters": [{"id": c["id"], "label": c["label"], "size": c["size"], "terms": [t for t, _ in c["terms"]]}
+                                                        for c in cl.clusters(s, scope)]}
+
+
+@server.tool()
+def lw_cluster(cluster_id: int, scope: str | None = None) -> dict[str, Any]:
+    """まとまりの詳細: 説明の語、中心に近い資料、代表の段落. scope は lw_clusters と同じ."""
+    s = runtime.store()
+    if not scope:
+        srcs = s.list_sources()
+        scope = srcs[0]["path"] if srcs else cl.ALL
+    return cl.cluster_detail(s, cluster_id, scope, limit=40)
+
+
+@server.tool()
+def lw_similar_documents(document_id: int) -> list[dict[str, Any]]:
+    """同じフォルダの中で、ベクトルの近い資料."""
+    return cl.similar_documents(runtime.store(), document_id)
 
 
 @server.tool()

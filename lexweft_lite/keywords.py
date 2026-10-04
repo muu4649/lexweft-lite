@@ -127,14 +127,19 @@ def _weight(term: str) -> float:
     return 0.9 if len(term) == 3 else 1.2
 
 
-def graph(store: Store, limit: int = 80, query: str | None = None, edges_per_node: int = 4) -> dict[str, Any]:
-    """よく出る語と、一緒に出る語どうしの辺. query を渡すと、その問いに当たる資料だけで作る."""
+def graph(store: Store, limit: int = 80, query: str | None = None, edges_per_node: int = 4,
+          documents: list[int] | None = None) -> dict[str, Any]:
+    """よく出る語と、一緒に出る語どうしの辺.
+    documents を渡すとその資料だけで (登録したフォルダの範囲など)、query を渡すとその問いに当たる資料だけで作る."""
     remaining = len(pending(store))
-    doc_ids: list[int] | None = None
+    doc_ids: list[int] | None = documents
     if query and query.strip():
-        doc_ids = _documents_for_query(store, query)
+        hits = _documents_for_query(store, query, limit=5000 if documents is not None else 400)
+        doc_ids = [d for d in hits if documents is None or d in set(documents)][:400]
         if not doc_ids:
             return {"nodes": [], "edges": [], "documents": 0, "pending": remaining, "query": query}
+    if doc_ids is not None and not doc_ids:
+        return {"nodes": [], "edges": [], "documents": 0, "pending": remaining, "query": query}
     where, params = "", []
     if doc_ids is not None:
         where = f" WHERE document_id IN ({','.join('?' * len(doc_ids))})"

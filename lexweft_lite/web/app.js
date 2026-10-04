@@ -29,6 +29,26 @@ function toast(msg) {
 }
 async function guard(fn) { try { await fn(); } catch (e) { toast('失敗しました: ' + e.message); } }
 
+function scopes() { return S.ov?.scopes || []; }
+function currentScope() {
+  const all = scopes();
+  if (S.scope && all.some(x => x.scope === S.scope)) return S.scope;
+  const folder = all.find(x => x.scope !== '*');
+  return folder ? folder.scope : '*';
+}
+function setScope(scope) {
+  S.scope = scope;
+  try { localStorage.setItem('lw-scope', scope); } catch (e) { /* 保存できなくても動く */ }
+}
+function scopeSelect() {
+  const cur = currentScope();
+  return `<select id="scopesel" title="意味層の範囲">${scopes().map(x => `<option value="${esc(x.scope)}" ${x.scope === cur ? 'selected' : ''}>${esc(x.label)} (${num(x.documents_now)} 件)</option>`).join('')}</select>`;
+}
+function bindScope(reload) {
+  const sel = $('#scopesel');
+  if (sel) sel.onchange = e => { setScope(e.target.value); S.mapSel = null; reload(); };
+}
+
 function typeColor(name) { return (S.ov?.types || []).find(t => t.name === name)?.color || '#6b7280'; }
 function typeChip(name) { return `<span class="chip type" style="background:${esc(typeColor(name))}">${esc(name)}</span>`; }
 function typeOptions(sel) { return (S.ov?.types || []).map(t => `<option ${t.name === sel ? 'selected' : ''}>${esc(t.name)}</option>`).join(''); }
@@ -58,12 +78,12 @@ async function load() {
 // ---------------- 資料 ----------------
 const loaders = {};
 loaders.docs = async () => {
-  const [list, job] = await Promise.all([api('/api/documents?' + new URLSearchParams({q: S.docQ || '', limit: 300})), api('/api/jobs/latest')]);
-  S.docs = list.documents; S.docTotal = list.total; S.job = job && job.id ? job : null;
+  const [list, outside] = await Promise.all([api('/api/documents?' + new URLSearchParams({q: S.docQ || '', limit: 300})), api('/api/documents/outside')]);
+  S.docs = list.documents; S.docTotal = list.total; S.outside = outside.documents;
   if (S.doc) S.doc = await api(`/api/documents/${S.doc.id}`).catch(() => null);
   if (S.showFolders) S.folders = await api('/api/documents/folders?depth=' + (S.folderDepth || 4));
   renderDocs();
-  if (S.job?.state === 'running') pollJob();
+  if (S.doc) loadSimilar();
 };
 
 function jobHtml() {
@@ -97,7 +117,7 @@ let jobTimer = null;
 function pollJob() {
   clearTimeout(jobTimer);
   jobTimer = setTimeout(async () => {
-    if (S.tab !== 'docs') return;
+    if (S.tab !== 'home') return;
     try {
       S.job = await api('/api/jobs/latest');
       const box = $('#jobbox');
@@ -115,19 +135,141 @@ async function pickFolder() {
 
 async function prepare(path) {
   if (!path) return;
-  if (/^https?:\/\//.test(path)) { S.job = await post('/api/jobs', {path}); S.scan = null; renderDocs(); pollJob(); return; }
+  if (/^https?:\/\//.test(path)) { S.job = await post('/api/jobs', {path}); S.scan = null; renderHome(); pollJob(); return; }
   S.scan = await api('/api/scan?' + new URLSearchParams({path}));
-  renderDocs();
+  S.scan.is_dir = !/\.(md|markdown|txt|text|html?|pdf|docx|csv)$/i.test(path);
+  renderHome();
 }
 
 function bindJob() {
   const go = $('#scango'), no = $('#scanno'), stop = $('#jobstop'), close = $('#jobclose');
-  if (go) go.onclick = () => guard(async () => { S.job = await post('/api/jobs', {path: S.scan.path}); S.scan = null; renderDocs(); pollJob(); });
-  if (no) no.onclick = () => { S.scan = null; renderDocs(); };
+  if (go) go.onclick = () => guard(async () => {
+    S.job = S.scan.is_dir ? await post('/api/sources', {path: S.scan.path}) : await post('/api/jobs', {path: S.scan.path});
+    S.scan = null; renderHome(); pollJob();
+  });
+  if (no) no.onclick = () => { S.scan = null; renderHome(); };
   if (stop) stop.onclick = () => guard(async () => { S.job = await post(`/api/jobs/${S.job.id}/cancel`, {}); });
-  if (close) close.onclick = () => { S.job = null; renderDocs(); };
+  if (close) close.onclick = () => { S.job = null; renderHome(); };
 }
 
+// ---------------- 取り込み ----------------
+loaders.home = async () => {
+  const [sources, job] = await Promise.all([api('/api/sources'), api('/api/jobs/latest')]);
+  S.sources = sources;
+  if (job && job.id) S.job = job;
+  renderHome();
+  if (S.job?.state === 'running') pollJob();
+  if (scopes().some(x => x.building)) pollLayer();
+};
+
+
+function layerHtml() {
+  const rows = scopes().filter(x => x.scope !== '*' || x.built_at);
+  if (!S.ov.stats.documents) return '<div class="muted small">資料を取り込むと、ここで自動で作ります。</div>';
+  if (!scopes().some(x => x.scope !== '*')) return '<div class="small muted">フォルダを登録すると、フォルダごとに作ります。</div>';
+  return `<table>${rows.map(x => {
+    let st;
+    if (x.building) st = '<span class="small">作っています…</span>';
+    else if (x.error) st = `<span class="small" style="color:var(--warn)">作れませんでした</span>`;
+    else if (!x.built_at) st = '<span class="small muted">まだ</span>';
+    else st = `<span class="small">${num(x.clusters)} のまとまり</span>${x.stale ? ' <span class="small" style="color:var(--warn)">（資料が変わりました）</span>' : ''}`;
+    return `<tr><td><b>${esc(x.label)}</b><div class="small muted">${num(x.documents_now)} 件の資料</div></td><td>${st}</td>
+      <td style="white-space:nowrap;text-align:right"><button class="btn" data-mapof="${esc(x.scope)}">地図</button> <button class="link small" data-rebuild="${esc(x.scope)}">作り直す</button></td></tr>`;
+  }).join('')}</table>
+  <div class="small muted" style="margin-top:6px">意味層はフォルダごとに作ります。フォルダをまたいで見たいときは、地図の範囲で「すべての資料」を選びます。</div>`;
+}
+
+function bindLayer() {
+  $$('[data-mapof]').forEach(b => b.onclick = () => { setScope(b.dataset.mapof); S.mapSel = null; setTab('map'); });
+  $$('[data-rebuild]').forEach(b => b.onclick = () => guard(async () => { await post('/api/layer/rebuild', {scope: b.dataset.rebuild}); await refreshOverview(); renderHome(); pollLayer(); }));
+}
+
+let layerTimer = null;
+function pollLayer() {
+  clearTimeout(layerTimer);
+  layerTimer = setTimeout(async () => {
+    if (S.tab !== 'home') return;
+    try {
+      await refreshOverview();
+      const box = $('#layerbox');
+      if (box) { box.innerHTML = layerHtml(); bindLayer(); }
+      if (scopes().some(x => x.building)) pollLayer();
+    } catch (e) { /* 次で直る */ }
+  }, 2000);
+}
+
+function renderHome() {
+  const src = (S.sources || []).map(f => `<tr><td><div style="word-break:break-all">${esc(f.path)}</div>
+      <div class="small muted">${num(f.documents)} 件 ・ ${f.last_run ? '最後に取り込み ' + esc(f.last_run.replace('T', ' ').slice(0, 16)) : 'まだ取り込んでいません'}${f.exists ? '' : ' ・ <span style="color:var(--warn)">フォルダが見つかりません</span>'}</div></td>
+      <td style="white-space:nowrap;text-align:right"><button class="btn" data-run="${esc(f.path)}">取り込み直す</button> <button class="link small" data-unreg="${esc(f.path)}">外す</button></td></tr>`).join('');
+  $('#main').innerHTML = `<div class="steps3">
+    <div class="panel step"><div class="stepno">1</div><h2>フォルダを登録する</h2>
+      <p class="small muted">資料の入ったフォルダを選びます。中の md / txt / html / pdf / docx / csv を読みます（隠しフォルダや開発用のフォルダは読みません）。</p>
+      <div class="row"><button class="btn primary" id="pickdir">フォルダを追加</button>${(S.sources || []).length ? '<button class="btn" id="runall">すべて取り込み直す</button>' : ''}</div>
+      ${src ? `<table style="margin-top:10px">${src}</table>` : '<div class="empty small">まだフォルダがありません</div>'}
+      <details style="margin-top:10px"><summary class="small">ファイル・URL・文章を個別に入れる</summary>
+        <div class="row" style="margin-top:8px"><button class="btn" id="pick">ファイルを選ぶ</button></div>
+        <div class="drop" id="drop" style="margin-top:8px">ここにファイルを落としても入れられます</div>
+        <input type="file" id="file" multiple hidden accept=".md,.markdown,.txt,.html,.htm,.pdf,.docx,.csv">
+        <div class="row" style="margin-top:8px"><input type="text" id="path" placeholder="パス または https://..." style="flex:1"><button class="btn" id="addpath">確かめる</button></div>
+        <input type="text" id="ttitle" placeholder="貼り付ける文章の題名" style="margin:8px 0"><textarea id="ttext" placeholder="本文"></textarea>
+        <button class="btn" id="addtext" style="margin-top:6px">文章を保存</button></details>
+    </div>
+    <div class="panel step"><div class="stepno">2</div><h2>取り込む</h2>
+      <div id="jobbox">${jobHtml() || `<div class="small muted">${S.ov.stats.documents ? `資料 ${num(S.ov.stats.documents)} 件を取り込んであります。` : 'フォルダを追加すると、ここで進み具合が見られます。'}</div>`}</div>
+      ${S.ov.stats.documents ? '<div class="row" style="margin-top:8px"><button class="btn" id="todocs">資料の一覧を見る</button></div>' : ''}
+    </div>
+    <div class="panel step"><div class="stepno">3</div><h2>意味層ができる</h2>
+      <p class="small muted">取り込むと自動で、フォルダごとに資料をベクトルにしてまとまり（クラスター）に分け、それぞれがどんな集まりかを語で示します。よく一緒に出る語のつながりも作ります。</p>
+      <div id="layerbox">${layerHtml()}</div>
+    </div></div>`;
+  bindHome();
+}
+
+function bindHome() {
+  const drop = $('#drop'), file = $('#file');
+  $('#pickdir').onclick = () => guard(async () => { const path = await pickFolder(); if (path) await prepare(path); });
+  if ($('#runall')) $('#runall').onclick = () => guard(async () => { S.job = await post('/api/sources/run', {}); renderHome(); pollJob(); });
+  $$('[data-run]').forEach(b => b.onclick = () => guard(async () => { S.job = await post('/api/sources/run', {path: b.dataset.run}); renderHome(); pollJob(); }));
+  $$('[data-unreg]').forEach(b => b.onclick = () => guard(async () => {
+    const path = b.dataset.unreg;
+    if (!confirm(`「${path}」の登録を外します。`)) return;
+    const del = confirm('このフォルダから取り込んだ資料も LeXWeft Lite から消しますか？（元のファイルは消えません）\nOK: 消す ／ やめる: 残す');
+    const r = await post('/api/sources/remove', {path, delete_documents: del});
+    toast(del ? `登録を外し、${num(r.deleted)} 件を消しました` : '登録を外しました'); load();
+  }));
+  $('#pick').onclick = () => file.click();
+  file.onchange = () => upload(file.files);
+  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+  drop.ondragleave = () => drop.classList.remove('over');
+  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files); };
+  $('#addpath').onclick = () => guard(async () => prepare($('#path').value.trim()));
+  $('#addtext').onclick = () => guard(async () => {
+    const r = await post('/api/documents/text', {title: $('#ttitle').value, text: $('#ttext').value});
+    toast(summary([r])); load();
+  });
+  if ($('#todocs')) $('#todocs').onclick = () => setTab('docs');
+  bindJob();
+  bindLayer();
+}
+
+async function loadSimilar() {
+  if (!S.doc) return;
+  try {
+    S.similar = await api(`/api/documents/${S.doc.id}/similar`);
+    const box = $('#similar');
+    if (box) box.innerHTML = similarHtml();
+    $$('#similar [data-opendoc]').forEach(b => b.onclick = () => openDoc(+b.dataset.opendoc));
+  } catch (e) { /* 意味層がまだ無いとき */ }
+}
+
+function similarHtml() {
+  if (!S.similar) return '<span class="small muted">計算しています…</span>';
+  if (!S.similar.length) return '<span class="small muted">似た資料はまだありません（意味層を作ると出ます）</span>';
+  return S.similar.map(d => `<div class="small"><button class="link" data-opendoc="${d.id}">${esc(d.title)}</button> <span class="muted">${d.similarity.toFixed(2)}</span></div>`).join('');
+}
+
+// ---------------- 資料 ----------------
 function renderDocs() {
   const rows = S.docs.map(d => `<tr class="click ${S.doc?.id === d.id ? 'sel' : ''}" data-doc="${d.id}">
       <td>${esc(d.title)}<div class="small muted">${esc(d.kind)} ・ ${num(d.paragraphs)} 段落</div></td>
@@ -138,21 +280,11 @@ function renderDocs() {
         <td style="white-space:nowrap">${/^([A-Za-z]:)?[\\/]/.test(f.folder) ? `<button class="link small" data-delunder="${esc(f.folder)}">まとめて消す</button>` : ''}</td></tr>`).join('')}</table></div>` : '';
   $('#main').innerHTML = `<div class="cols">
     <div>
-      <div class="panel">
-        <h2>資料を入れる</h2>
-        <div class="row" style="margin-bottom:10px"><button class="btn primary" id="pickdir">フォルダを選ぶ</button><button class="btn" id="pick">ファイルを選ぶ</button></div>
-        <div class="drop" id="drop">ここにファイルを落としても入れられます<div class="small">md / txt / html / pdf / docx / csv</div></div>
-        <input type="file" id="file" multiple hidden accept=".md,.markdown,.txt,.html,.htm,.pdf,.docx,.csv">
-        <h3>パスや URL を入れる</h3>
-        <div class="row"><input type="text" id="path" placeholder="/Users/.../資料フォルダ または https://..." style="flex:1"><button class="btn" id="addpath">確かめる</button></div>
-        <details style="margin-top:10px"><summary class="small">文章を貼り付ける</summary>
-          <input type="text" id="ttitle" placeholder="題名" style="margin:8px 0"><textarea id="ttext" placeholder="本文"></textarea>
-          <button class="btn" id="addtext" style="margin-top:6px">保存</button></details>
-        <div id="jobbox" style="margin-top:12px">${jobHtml()}</div>
-      </div>
       <div class="panel"><div class="row" style="justify-content:space-between"><h2 style="margin:0">資料 <span class="muted small">${num(S.docTotal)} 件</span></h2>
           <button class="link small" id="togglefolders">${S.showFolders ? 'フォルダ別を閉じる' : 'フォルダ別に見る・消す'}</button></div>
         ${folders}
+        ${S.outside && S.ov.sources ? `<div class="small" style="margin-top:8px;padding:8px;border-radius:6px;background:var(--bg)">登録したフォルダの外の資料が ${num(S.outside)} 件あります（意味層には入りません）。
+          <button class="link" id="deloutside">まとめて消す</button></div>` : ''}
         <input type="text" id="docq" placeholder="題名・場所で絞る" value="${esc(S.docQ || '')}" style="margin:10px 0">
         ${S.docs.length ? `<table>${rows}</table>${S.docTotal > S.docs.length ? `<div class="small muted" style="margin-top:6px">新しい ${num(S.docs.length)} 件を表示しています。題名や場所で絞ってください</div>` : ''}` : '<div class="empty">まだ資料がありません</div>'}</div>
     </div>
@@ -178,6 +310,7 @@ function docDetailHtml() {
     <div class="row" style="justify-content:space-between"><h2 style="margin:0">${esc(d.title)}</h2>
       <div class="row"><button class="btn" id="copymd">Markdown をコピー</button><button class="btn danger" id="deldoc">削除</button></div></div>
     <div class="small muted" style="margin:4px 0 8px">${esc(d.source)}</div>${meta}
+    <details class="panel" style="margin-top:10px;background:var(--bg)" open><summary class="small"><b>似た資料</b>（ベクトルの近さ）</summary><div id="similar" style="margin-top:6px">${similarHtml()}</div></details>
     <div class="panel" style="margin-top:12px;background:var(--bg)">
       <div class="small muted">段落にチェックを入れて、その段落を根拠に概念を書く</div>
       <div class="row" style="margin-top:6px"><input type="text" id="cname" placeholder="概念の名前 (例: セル間の熱伝播)" style="flex:1;min-width:180px">
@@ -188,20 +321,12 @@ function docDetailHtml() {
 }
 
 function bindDocs() {
-  const drop = $('#drop'), file = $('#file');
-  $('#pick').onclick = () => file.click();
-  $('#pickdir').onclick = () => guard(async () => { const path = await pickFolder(); if (path) { $('#path').value = path; await prepare(path); } });
-  file.onchange = () => upload(file.files);
-  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
-  drop.ondragleave = () => drop.classList.remove('over');
-  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files); };
-  $('#addpath').onclick = () => guard(async () => prepare($('#path').value.trim()));
-  $('#path').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) guard(async () => prepare($('#path').value.trim())); };
-  $('#addtext').onclick = () => guard(async () => {
-    const r = await post('/api/documents/text', {title: $('#ttitle').value, text: $('#ttext').value});
-    toast(summary([r])); load();
-  });
   $('#docq').onchange = e => { S.docQ = e.target.value.trim(); loaders.docs(); };
+  if ($('#deloutside')) $('#deloutside').onclick = () => guard(async () => {
+    if (!confirm(`登録したフォルダの外にある資料 ${num(S.outside)} 件を LeXWeft Lite から消します。元のファイルは消えません。`)) return;
+    const r = await post('/api/documents/delete-outside', {});
+    S.doc = null; toast(`${num(r.deleted)} 件を消しました`); load();
+  });
   $('#togglefolders').onclick = () => { S.showFolders = !S.showFolders; loaders.docs(); };
   const fd = d => { S.folderDepth = Math.max(1, Math.min(12, (S.folderDepth || 4) + d)); loaders.docs(); };
   if ($('#fdless')) { $('#fdless').onclick = () => fd(-1); $('#fdmore').onclick = () => fd(1); }
@@ -211,8 +336,7 @@ function bindDocs() {
     const r = await post('/api/documents/delete-under', {prefix: f});
     S.doc = null; toast(`${num(r.deleted)} 件を消しました`); load();
   }));
-  $$('[data-doc]').forEach(tr => tr.onclick = () => guard(async () => { S.picked.clear(); S.doc = await api(`/api/documents/${tr.dataset.doc}`); renderDocs(); }));
-  bindJob();
+  $$('[data-doc]').forEach(tr => tr.onclick = () => guard(async () => { S.picked.clear(); S.doc = await api(`/api/documents/${tr.dataset.doc}`); S.similar = null; renderDocs(); loadSimilar(); }));
   bindDocDetail();
 }
 
@@ -335,14 +459,112 @@ function bindConcept() {
 }
 
 async function openDoc(id) {
-  await guard(async () => { S.picked.clear(); S.doc = await api(`/api/documents/${id}`); setTab('docs'); });
+  await guard(async () => { S.picked.clear(); S.doc = await api(`/api/documents/${id}`); S.similar = null; setTab('docs'); });
+}
+
+// ---------------- 地図 ----------------
+loaders.map = async () => {
+  S.map = await api('/api/map?' + new URLSearchParams({scope: currentScope()}));
+  renderMap();
+  if (S.map.status.building || (S.map.status.stale && S.map.status.documents_now)) setTimeout(() => S.tab === 'map' && loaders.map(), 3000);
+};
+
+function renderMap() {
+  const M = S.map, st = M.status;
+  const list = M.clusters.map(c => `<li data-cl="${c.id}" class="${S.mapSel === c.id ? 'sel' : ''}"><span><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)}</span><span class="small muted">${num(c.size)}</span></li>`).join('');
+  let empty = '';
+  if (!M.points.length) empty = (st.building || (st.stale && st.documents_now)) ? '意味層を作っています…（資料が多いと数分かかります）'
+    : st.documents_now ? 'まとまりを作れる語がありません。' : '「取り込み」でフォルダを登録すると、ここに資料の地図ができます。';
+  $('#main').innerHTML = `<div class="mapcols">
+    <div class="panel" style="max-height:calc(100vh - 110px);overflow:auto">
+      <div style="margin-bottom:10px">${scopeSelect()}</div>
+      <h2>まとまり <span class="small muted">${num(M.clusters.length)}</span></h2>
+      <div class="small muted" style="margin-bottom:8px">資料の中身（語の使われ方）をベクトルにして、近いものをまとめました。名前はそのまとまりに特に多く出る語です。</div>
+      <ul class="clist">${list}</ul>
+      ${st.stale && !st.building ? '<div class="small" style="color:var(--warn);margin-top:8px">資料が変わりました。<button class="link" id="mrebuild">作り直す</button></div>' : ''}
+      ${st.building ? '<div class="small muted" style="margin-top:8px">作り直しています…</div>' : ''}
+    </div>
+    <div>
+      <div class="graphwrap">${M.points.length ? '<svg id="graph"></svg>' : `<div class="empty">${empty}</div>`}
+        <div class="legend small">点 = 資料（近い点ほど中身が似ている） ・ 色 = まとまり<br>ホイールで拡大、ドラッグで移動、点を押すと資料</div>
+        <div class="side" id="gside" ${S.mapSel == null ? 'hidden' : ''}></div>
+        <div id="tip" class="tip" hidden></div></div>
+    </div></div>`;
+  $$('[data-cl]').forEach(li => li.onclick = () => selectCluster(+li.dataset.cl));
+  if ($('#mrebuild')) $('#mrebuild').onclick = () => guard(async () => { await post('/api/layer/rebuild', {scope: currentScope()}); loaders.map(); });
+  bindScope(() => loaders.map());
+  if (M.points.length) drawMap(M);
+  if (S.mapSel != null) selectCluster(S.mapSel);
+}
+
+function drawMap(M) {
+  const svg = $('#graph'), NS = 'http://www.w3.org/2000/svg';
+  const W = svg.clientWidth || 900, H = svg.clientHeight || 600, pad = 40;
+  const color = Object.fromEntries(M.clusters.map(c => [c.id, c.color]));
+  const root = document.createElementNS(NS, 'g'); svg.appendChild(root);
+  const X = x => pad + x * (W - pad * 2), Y = y => pad + y * (H - pad * 2);
+  const r = M.points.length > 2000 ? 3 : M.points.length > 500 ? 4 : 6;
+  const dots = M.points.map(p => {
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('cx', X(p.x)); c.setAttribute('cy', Y(p.y)); c.setAttribute('r', r);
+    c.setAttribute('fill', color[p.c] || '#6b7280'); c.setAttribute('fill-opacity', .75);
+    c.dataset.c = p.c; c.style.cursor = 'pointer';
+    c.addEventListener('mouseenter', ev => { const t = $('#tip'); t.textContent = p.title; t.hidden = false; t.style.left = (ev.offsetX + 12) + 'px'; t.style.top = (ev.offsetY + 12) + 'px'; });
+    c.addEventListener('mouseleave', () => ($('#tip').hidden = true));
+    c.addEventListener('click', ev => { ev.stopPropagation(); openDoc(p.id); });
+    root.appendChild(c); return c;
+  });
+  M.clusters.forEach(c => {
+    const g = document.createElementNS(NS, 'g'); g.style.cursor = 'pointer';
+    const t = document.createElementNS(NS, 'text');
+    t.textContent = c.label.length > 18 ? c.label.slice(0, 17) + '…' : c.label;
+    t.setAttribute('x', X(c.x)); t.setAttribute('y', Y(c.y)); t.setAttribute('text-anchor', 'middle'); t.setAttribute('class', 'maplabel');
+    t.style.fill = c.color;
+    g.appendChild(t); g.addEventListener('click', ev => { ev.stopPropagation(); selectCluster(c.id); });
+    root.appendChild(g);
+  });
+  S.mapDots = dots;
+  let view = {x: 0, y: 0, k: 1}, pan = null;
+  const apply = () => root.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.k})`);
+  svg.addEventListener('pointerdown', ev => { pan = {x: ev.clientX - view.x, y: ev.clientY - view.y, moved: false}; });
+  svg.addEventListener('pointermove', ev => { if (pan) { view.x = ev.clientX - pan.x; view.y = ev.clientY - pan.y; pan.moved = true; apply(); } });
+  svg.addEventListener('pointerup', () => { pan = null; });
+  svg.addEventListener('wheel', ev => {
+    ev.preventDefault();
+    const b = svg.getBoundingClientRect(), mx = ev.clientX - b.left, my = ev.clientY - b.top, k = Math.min(12, Math.max(.5, view.k * (ev.deltaY < 0 ? 1.15 : .87)));
+    view.x = mx - (mx - view.x) * k / view.k; view.y = my - (my - view.y) * k / view.k; view.k = k; apply();
+    root.querySelectorAll('circle').forEach(c => c.setAttribute('r', r / Math.sqrt(view.k)));
+    root.querySelectorAll('text').forEach(t => t.style.fontSize = (13 / Math.sqrt(view.k)) + 'px');
+  }, {passive: false});
+}
+
+async function selectCluster(id) {
+  S.mapSel = id;
+  $$('[data-cl]').forEach(li => li.classList.toggle('sel', +li.dataset.cl === id));
+  (S.mapDots || []).forEach(d => d.setAttribute('fill-opacity', +d.dataset.c === id ? .95 : .12));
+  const side = $('#gside'); if (!side) return; side.hidden = false;
+  await guard(async () => {
+    const scope = currentScope();
+    const c = await api(`/api/clusters/${id}?` + new URLSearchParams({scope}));
+    const where = scope === '*' ? 'すべての資料' : `フォルダ ${scope}`;
+    const prompt = `LeXWeft Lite の${where}のまとまり ${c.id}「${c.label}」の資料を読んで、課題と解決手段を根拠の段落つきで書いて。解決手段が課題を解く関係も結んで。`;
+    side.innerHTML = `<div class="row" style="justify-content:space-between"><b><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)}</b><button class="link" id="gclose">×</button></div>
+      <div class="small muted">${num(c.size)} 件の資料</div>
+      <h3>どんな集まりか（特に多く出る語）</h3><div>${c.terms.map(([t]) => `<span class="chip">${esc(t)}</span>`).join('')}</div>
+      <h3>代表的な段落</h3>${c.paragraphs.map(p => `<div class="para small"><span class="pid">¶${p.paragraph_id}</span><button class="link" data-opendoc="${p.document_id}">${esc(p.title)}</button><div>${esc(p.text)}</div></div>`).join('') || '<div class="small muted">なし</div>'}
+      <h3>中心に近い資料</h3>${c.documents.slice(0, 15).map(d => `<div class="small"><button class="link" data-opendoc="${d.id}">${esc(d.title)}</button></div>`).join('')}
+      <h3>Claude で深める</h3><pre class="code">${esc(prompt)}</pre><button class="btn" id="copyprompt">頼み方をコピー</button>`;
+    $('#gclose').onclick = () => { side.hidden = true; S.mapSel = null; (S.mapDots || []).forEach(d => d.setAttribute('fill-opacity', .75)); $$('[data-cl]').forEach(li => li.classList.remove('sel')); };
+    $$('#gside [data-opendoc]').forEach(b => b.onclick = () => openDoc(+b.dataset.opendoc));
+    $('#copyprompt').onclick = () => guard(async () => { await navigator.clipboard.writeText(prompt); toast('コピーしました。Claude Desktop に貼って頼んでください'); });
+  });
 }
 
 // ---------------- つながり ----------------
 loaders.graph = async () => {
   if (!S.gopts.mode) S.gopts.mode = S.ov.stats.concepts ? 'layer' : 'keywords';
   if (S.gopts.mode === 'keywords') {
-    S.graph = await api('/api/keywords/graph?' + new URLSearchParams({limit: S.gopts.limit || 80, ...(S.gopts.q ? {q: S.gopts.q} : {})}));
+    S.graph = await api('/api/keywords/graph?' + new URLSearchParams({limit: S.gopts.limit || 80, scope: currentScope(), ...(S.gopts.q ? {q: S.gopts.q} : {})}));
   } else {
     S.graph = await api('/api/graph?' + new URLSearchParams({documents: S.gopts.documents, ...(S.gopts.type ? {type: S.gopts.type} : {})}));
   }
@@ -353,7 +575,7 @@ function renderGraph() {
   const g = S.graph, kw = S.gopts.mode === 'keywords';
   const modeSel = `<select id="gmode"><option value="keywords" ${kw ? 'selected' : ''}>キーワードのつながり (自動)</option><option value="layer" ${kw ? '' : 'selected'}>意味層 (課題・解決手段)</option></select>`;
   const controls = kw
-    ? `<input type="text" id="gq" placeholder="テーマで絞る (例: 熱暴走 | 冷却)" value="${esc(S.gopts.q || '')}" style="width:260px">
+    ? `${scopeSelect()}<input type="text" id="gq" placeholder="テーマで絞る (例: 熱暴走 | 冷却)" value="${esc(S.gopts.q || '')}" style="width:240px">
        <select id="glimit">${[40, 80, 120].map(n => `<option ${+(S.gopts.limit || 80) === n ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="small muted">語</span>`
     : `<label><input type="checkbox" id="gdocs" ${S.gopts.documents ? 'checked' : ''}> 資料も出す</label>
        <select id="gtype"><option value="">すべての型</option>${typeOptions(S.gopts.type)}</select>`;
@@ -365,7 +587,8 @@ function renderGraph() {
     empty = 'まだ意味層がありません。「LLM と接続」の手順で Claude に課題と解決手段を書かせると、ここに出ます。<br>それまでは「キーワードのつながり (自動)」で全体を見られます。';
   }
   const legend = kw
-    ? `<div><span class="dot" style="background:#0e7490"></span> 語 (大きいほど多くの資料に出る)</div><div class="small muted">線: 同じ資料に一緒に出る</div>
+    ? `${(g.clusters || []).slice(0, 12).map(c => `<div class="small"><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)}</div>`).join('')}
+       <div class="small muted">点 = 語（大きいほど多くの資料に出る） ・ 色 = いちばん多く出るまとまり ・ 線 = 同じ資料に一緒に出る</div>
        <div class="small muted">${num(g.documents)} 件の資料から${g.pending ? ` ・ 残り ${num(g.pending)} 件を数えています` : ''}</div>`
     : `${(g.types || []).map(t => `<div><span class="dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</div>`).join('')}${S.gopts.documents ? '<div><span class="dot" style="background:#9ca3af"></span> 資料</div>' : ''}<div class="small muted">実線: 関係 / 点線: 根拠</div>`;
   $('#main').innerHTML = `<div class="row" style="margin-bottom:10px">${modeSel}${controls}
@@ -377,6 +600,7 @@ function renderGraph() {
   if (kw) {
     $('#gq').onchange = e => { S.gopts.q = e.target.value.trim(); loaders.graph(); };
     $('#glimit').onchange = e => { S.gopts.limit = +e.target.value; loaders.graph(); };
+    bindScope(() => loaders.graph());
   } else {
     $('#gdocs').onchange = e => { S.gopts.documents = e.target.checked; loaders.graph(); };
     $('#gtype').onchange = e => { S.gopts.type = e.target.value; loaders.graph(); };
@@ -563,6 +787,20 @@ loaders.connect = async () => {
 
 // ---------------- 起動 ----------------
 $$('#tabs button').forEach(b => b.onclick = () => setTab(b.dataset.tab));
-let first = 'docs';
-try { first = localStorage.getItem('lw-tab') || 'docs'; } catch (e) { /* 既定のまま */ }
-setTab(loaders[first] ? first : 'docs');
+// 表示 (自動 / ライト / ダーク)
+(() => {
+  const sel = $('#theme');
+  let cur = 'auto';
+  try { cur = localStorage.getItem('lw-theme') || 'auto'; } catch (e) { /* 既定のまま */ }
+  sel.value = cur;
+  sel.onchange = () => {
+    const v = sel.value;
+    if (v === 'auto') delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = v;
+    try { localStorage.setItem('lw-theme', v); } catch (e) { /* 保存できなくても動く */ }
+    if (S.tab === 'map' || S.tab === 'graph') loaders[S.tab]();
+  };
+})();
+try { S.scope = localStorage.getItem('lw-scope') || null; } catch (e) { /* 既定のまま */ }
+let first = 'home';
+try { first = localStorage.getItem('lw-tab') || 'home'; } catch (e) { /* 既定のまま */ }
+setTab(loaders[first] ? first : 'home');

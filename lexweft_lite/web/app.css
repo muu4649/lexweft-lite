@@ -4,9 +4,14 @@
   --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg: #15171a; --panel: #1d2024; --ink: #e6e6e6; --muted: #9aa3ad; --line: #30353b;
-          --accent: #22a3c4; --accent-ink: #0b1215; --warn: #f87171; --chip: #262a30; --hl: #4a3b10; }
+  :root:not([data-theme="light"]) { --bg: #15171a; --panel: #1d2024; --ink: #e6e6e6; --muted: #9aa3ad; --line: #30353b;
+          --accent: #22a3c4; --accent-ink: #0b1215; --warn: #f87171; --chip: #262a30; --hl: #4a3b10; color-scheme: dark; }
 }
+:root[data-theme="dark"] { --bg: #15171a; --panel: #1d2024; --ink: #e6e6e6; --muted: #9aa3ad; --line: #30353b;
+        --accent: #22a3c4; --accent-ink: #0b1215; --warn: #f87171; --chip: #262a30; --hl: #4a3b10; color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+html { background: var(--bg); }
+#theme { font-size: 12px; padding: 3px 6px; }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.65 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif; }
 .top { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 20px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
@@ -62,3 +67,17 @@ pre.code { background: var(--bg); border: 1px solid var(--line); border-radius: 
 mark { background: var(--hl); color: inherit; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg); padding: 8px 16px; border-radius: 8px; z-index: 20; max-width: 90vw; }
 ol.steps li { margin-bottom: 10px; }
+
+.steps3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 1100px) { .steps3 { grid-template-columns: 1fr; } }
+.step { position: relative; padding-top: 18px; }
+.stepno { width: 28px; height: 28px; border-radius: 50%; background: var(--accent); color: var(--accent-ink); display: grid; place-items: center; font-weight: 700; margin-bottom: 8px; }
+.stat-row { display: flex; gap: 24px; margin: 6px 0; }
+.big { font-size: 26px; font-weight: 700; line-height: 1.2; }
+.mapcols { display: grid; grid-template-columns: minmax(240px, 300px) 1fr; gap: 16px; align-items: start; }
+@media (max-width: 860px) { .mapcols { grid-template-columns: 1fr; } }
+.maplabel { font-size: 13px; font-weight: 700; paint-order: stroke; stroke: var(--panel); stroke-width: 4px; }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); font-size: 12px; padding: 3px 8px; border-radius: 6px; max-width: 360px; z-index: 3; }
+.legend { max-width: 340px; }
+#scopesel { max-width: 100%; }
+.mapcols #scopesel { width: 100%; }

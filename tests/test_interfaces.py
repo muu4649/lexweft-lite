@@ -79,21 +79,18 @@ def test_cli(home, sample_file, capsys):
 
 
 def test_serve_port_fallback(home, monkeypatch):
-    import socket
+    import pytest
 
     from lexweft_lite import web
 
-    busy = socket.socket()
-    busy.bind(("127.0.0.1", 0))
-    busy.listen()
-    port = busy.getsockname()[1]
     seen = {}
     monkeypatch.setattr("uvicorn.run", lambda app, host, port, log_level: seen.update(port=port))
-    try:
-        web.serve(port=port, open_browser=False)
-    finally:
-        busy.close()
-    assert seen["port"] != port
+    monkeypatch.setattr(web, "_lite_running", lambda p: False)
+    monkeypatch.setattr(web, "_port_free", lambda host, p: p != 8765)
+    web.serve(open_browser=False)              # 番号を指定しなければ、空いている次の番号で開く
+    assert seen["port"] == 8766
+    with pytest.raises(SystemExit):           # 指定した番号が使われていれば止まる
+        web.serve(port=8765, open_browser=False)
 
 
 def test_serve_for_app_writes_ready_file(home, tmp_path):

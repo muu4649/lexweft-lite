@@ -18,6 +18,7 @@ from .loaders import iter_files, load_file, load_url
 class Job:
     id: str
     target: str
+    targets: list[str] = field(default_factory=list)
     total: int = 0
     done: int = 0
     counts: dict[str, int] = field(default_factory=dict)
@@ -55,10 +56,13 @@ def _run(job: Job) -> None:
             _bump(job, r.status)
             job.done = 1
         else:
-            root = Path(job.target).expanduser()
-            if not root.exists():
-                raise FileNotFoundError(str(root))
-            files = [root] if root.is_file() else list(iter_files(root))
+            files: list[Path] = []
+            for target in job.targets:
+                root = Path(target).expanduser()
+                if not root.exists():
+                    job.errors.append(f"見つかりません: {root}")
+                    continue
+                files += [root] if root.is_file() else list(iter_files(root))
             job.total = len(files)
             for p in files:
                 if job.cancel.is_set():
@@ -77,20 +81,33 @@ def _run(job: Job) -> None:
                 job.done += 1
         if job.state == "running":
             job.state = "done"
+        for target in job.targets:
+            store.touch_source(target)
     except Exception as e:  # noqa: BLE001
         job.state = "failed"
         job.errors.append(str(e))
     finally:
         job.current = ""
         job.finished = time.time()
+        # 取り込みが終わったら、自動の意味層 (まとまり・地図) を作り直す
+        try:
+            from .clusters import refresh_registered
+
+            refresh_registered(store)
+        except Exception as e:  # noqa: BLE001
+            job.errors.append(f"意味層: {e}")
 
 
-def start(target: str) -> Job:
+def start(target: str | list[str]) -> Job:
+    """取り込みを始める. target はファイル・フォルダ・URL、または複数のフォルダ."""
+    targets = [t.strip() for t in ([target] if isinstance(target, str) else target) if t and t.strip()]
+    if not targets:
+        raise ValueError("取り込むものがありません")
     with _lock:
         running = [j for j in _jobs.values() if j.state == "running"]
         if running:
             raise ValueError("ほかの取り込みが進んでいます。終わるか止めてから始めてください")
-        job = Job(id=uuid.uuid4().hex[:12], target=target.strip())
+        job = Job(id=uuid.uuid4().hex[:12], target=" / ".join(targets), targets=targets)
         _jobs[job.id] = job
     threading.Thread(target=_run, args=(job,), daemon=True).start()
     return job

@@ -98,6 +98,13 @@ CREATE INDEX IF NOT EXISTS idx_doc_terms_term ON doc_terms(term);
 CREATE TABLE IF NOT EXISTS doc_terms_done (
     document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE
 );
+
+-- 取り込むフォルダの登録
+CREATE TABLE IF NOT EXISTS sources (
+    path TEXT PRIMARY KEY,
+    added_at TEXT NOT NULL,
+    last_run TEXT
+);
 """
 
 DEFAULT_TYPES = (
@@ -109,6 +116,11 @@ DEFAULT_TYPES = (
 def normalize(text: str) -> str:
     """表記ゆれを吸収した比較用の文字列 (全角半角・大文字小文字・空白)."""
     return "".join(unicodedata.normalize("NFKC", text or "").casefold().split())
+
+
+def nfc(text: str) -> str:
+    """パスの表記をそろえる. macOS のファイル名は濁点・半濁点を分けて (NFD) 持つことがあるため、合成した形 (NFC) で比べる."""
+    return unicodedata.normalize("NFC", text or "")
 
 
 def now_iso() -> str:
@@ -124,9 +136,29 @@ class Store:
         self.conn.execute("PRAGMA journal_mode = WAL")
         self._lock = threading.RLock()
         self.conn.executescript(SCHEMA)
+        from .clusters import SCHEMA as LAYER_SCHEMA   # 自動の意味層 (まとまり・地図・ベクトル)
+
+        self.conn.executescript(LAYER_SCHEMA)
+        self._normalize_sources()
         with self.tx() as c:
             for name, desc, color, ordinal in DEFAULT_TYPES:
                 c.execute("INSERT OR IGNORE INTO types(name, description, color, ordinal) VALUES (?, ?, ?, ?)", (name, desc, color, ordinal))
+
+    def _normalize_sources(self) -> None:
+        """前の版で NFD のまま保存した出所を NFC にそろえる (同じ出所が NFC で既にあれば、古いほうを消す)."""
+        rows = [(int(r[0]), r[1]) for r in self.conn.execute("SELECT id, source FROM documents") if nfc(r[1]) != r[1]]
+        srcs = [r[0] for r in self.conn.execute("SELECT path FROM sources") if nfc(r[0]) != r[0]]
+        if not rows and not srcs:
+            return
+        with self.tx() as c:
+            for i, src in rows:
+                if c.execute("SELECT 1 FROM documents WHERE source = ?", (nfc(src),)).fetchone():
+                    c.execute("DELETE FROM documents WHERE id = ?", (i,))
+                else:
+                    c.execute("UPDATE documents SET source = ? WHERE id = ?", (nfc(src), i))
+            for p in srcs:
+                c.execute("UPDATE OR IGNORE sources SET path = ? WHERE path = ?", (nfc(p), p))
+                c.execute("DELETE FROM sources WHERE path = ?", (p,))
 
     @contextmanager
     def tx(self) -> Iterator[sqlite3.Connection]:
@@ -143,7 +175,7 @@ class Store:
 
     # ---------------- 資料 ----------------
     def find_document_by_source(self, source: str) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM documents WHERE source = ?", (source,)).fetchone()
+        return self.conn.execute("SELECT * FROM documents WHERE source = ?", (nfc(source),)).fetchone()
 
     def add_document(self, title: str, source: str, kind: str, sha256: str, meta: dict[str, Any],
                      paragraphs: list[tuple[str, str]]) -> int:
@@ -151,6 +183,7 @@ class Store:
 
         同じ出所の資料があれば置き換える。そのとき、本文が変わっていない段落に付いていた根拠と関係は新しい段落に付け直す。
         """
+        source = nfc(source)
         with self.tx() as c:
             old = c.execute("SELECT id FROM documents WHERE source = ?", (source,)).fetchone()
             carry_ev: list[sqlite3.Row] = []
@@ -222,7 +255,7 @@ class Store:
 
     def delete_documents_under(self, prefix: str) -> list[int]:
         """出所がそのフォルダ (またはそのファイル) の資料をまとめて消し、消した資料 ID を返す."""
-        prefix = prefix.rstrip("/") or "/"
+        prefix = nfc(prefix).rstrip("/") or "/"
         like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
         ids = [int(r[0]) for r in self.conn.execute(
             "SELECT id FROM documents WHERE source = ? OR source LIKE ? ESCAPE '\\'", (prefix, like))]
@@ -246,6 +279,59 @@ class Store:
             f"SELECT p.id, p.document_id, p.ordinal, p.heading, p.text, d.title FROM paragraphs p JOIN documents d ON d.id = p.document_id WHERE p.id IN ({q})",
             ids).fetchall()
         return {int(r["id"]): dict(r) for r in rows}
+
+    # ---------------- 登録したフォルダ ----------------
+    def add_source(self, path: str) -> None:
+        with self.tx() as c:
+            c.execute("INSERT OR IGNORE INTO sources(path, added_at) VALUES (?, ?)", (nfc(path), now_iso()))
+
+    def touch_source(self, path: str) -> None:
+        with self.tx() as c:
+            c.execute("UPDATE sources SET last_run = ? WHERE path = ?", (now_iso(), nfc(path)))
+
+    def remove_source(self, path: str) -> bool:
+        with self.tx() as c:
+            return c.execute("DELETE FROM sources WHERE path = ?", (nfc(path),)).rowcount > 0
+
+    def list_sources(self) -> list[dict[str, Any]]:
+        out = []
+        for r in self.conn.execute("SELECT * FROM sources ORDER BY added_at"):
+            p = r["path"].rstrip("/")
+            like = p.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+            n = int(self.conn.execute("SELECT COUNT(*) FROM documents WHERE source = ? OR source LIKE ? ESCAPE '\\'", (p, like)).fetchone()[0])
+            out.append({**dict(r), "documents": n, "exists": Path(p).exists()})
+        return out
+
+    def documents_outside_sources(self) -> list[int]:
+        """登録したフォルダのどれにも入っていない、ファイルから取り込んだ資料 (貼り付けた文章・URL・画面から入れたファイルは除く)."""
+        from pathlib import PurePath
+
+        roots = [PurePath(nfc(r[0]).rstrip("/")) for r in self.conn.execute("SELECT path FROM sources")]
+        files_dir = None
+        try:
+            from . import config
+
+            files_dir = PurePath(nfc(str(config.home() / "files")))
+        except Exception:  # noqa: BLE001
+            pass
+        out = []
+        for i, src in self.conn.execute("SELECT id, source FROM documents"):
+            if src.startswith(("text:", "http://", "https://")):
+                continue
+            p = PurePath(src)
+            if files_dir and (p == files_dir or files_dir in p.parents):
+                continue
+            if any(p == r or r in p.parents for r in roots):
+                continue
+            out.append(int(i))
+        return out
+
+    def delete_documents(self, ids: list[int]) -> int:
+        with self.tx() as c:
+            for k in range(0, len(ids), 500):
+                chunk = ids[k:k + 500]
+                c.execute(f"DELETE FROM documents WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        return len(ids)
 
     def compact(self) -> None:
         """まとめて消したあとに、全文索引を作り直してファイルを詰める."""
