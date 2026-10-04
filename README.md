@@ -288,3 +288,7 @@ flowchart LR
 ```
 
 `dist/LeXWeftLite-<版>.zip` ができます。ZIP の中のフォルダ名は版によらず `LeXWeftLite` です。
+
+### 権利と利用条件
+
+このリポジトリのソースコードと資料の著作権は、提供者（LeXI/Vent）にあります。オープンソースのライセンスは付けていません。テスト版の利用条件は [TERMS.txt](TERMS.txt) をご覧ください。
