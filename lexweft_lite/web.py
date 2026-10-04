@@ -54,7 +54,7 @@ async def _value_error(_: Request, exc: ValueError) -> JSONResponse:
 @app.get("/api/overview")
 def overview() -> dict[str, Any]:
     s = runtime.store()
-    return {"version": __version__, "home": str(config.home()), "stats": s.stats(), "types": ly.list_types(s),
+    return {"version": __version__, "home": str(config.home()), "distribution": config.distribution(), "stats": s.stats(), "types": ly.list_types(s),
             "relation_kinds": list(ly.RELATION_KINDS), "documents_without_concepts": ly.documents_without_concepts(s, limit=10)}
 
 

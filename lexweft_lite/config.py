@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import Any
 
 
 def home() -> Path:
@@ -20,3 +22,13 @@ def db_path() -> Path:
 
 def markdown_dir() -> Path:
     return home() / "markdown"
+
+
+def distribution() -> dict[str, Any]:
+    """配布版ごとの設定 (感想フォームの URL など). 配布用 ZIP を作るときに書き込む."""
+    try:
+        data = json.loads((Path(__file__).parent / "distribution.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    url = str(data.get("feedback_url") or "")
+    return {"channel": str(data.get("channel") or "dev"), "feedback_url": url if url.startswith("https://") else ""}

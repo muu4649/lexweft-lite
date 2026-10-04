@@ -5,3 +5,4 @@ __pycache__/
 .DS_Store
 LeXWeft Lite.command
 LeXWeft Lite.bat
+dist/

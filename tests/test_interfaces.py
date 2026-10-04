@@ -28,6 +28,7 @@ def test_api_flow(home, sample_file):
     s = c.get("/api/search", params={"q": ["熱暴走|相変化"]}).json()
     assert len(s["queries"]) == 2 and s["paragraphs"]
     assert "lexweft-lite" in c.get("/api/mcp-config").json()["mcpServers"]
+    assert c.get("/api/overview").json()["distribution"] == {"channel": "dev", "feedback_url": ""}
     assert "## 課題" in c.get("/api/export/layer.md").text
     assert c.get("/").status_code == 200
     # 別の Host からの呼び出しは断る

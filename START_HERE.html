@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LeXWeft Lite のはじめかた</title>
+<style>
+  :root { --bg: #f7f7f5; --panel: #fff; --ink: #1f2328; --muted: #6b7280; --line: #e5e7eb; --accent: #0e7490; --code: #f1f5f9; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #15171a; --panel: #1d2024; --ink: #e6e6e6; --muted: #9aa3ad; --line: #30353b; --accent: #22a3c4; --code: #262a30; } }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.8 -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; }
+  h1 span { color: var(--accent); }
+  h2 { font-size: 19px; margin: 36px 0 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line); }
+  h3 { font-size: 16px; margin: 22px 0 6px; }
+  .lead { color: var(--muted); margin: 0 0 20px; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 18px; margin: 12px 0; }
+  ol li { margin-bottom: 10px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: var(--code); border-radius: 6px; }
+  code { padding: 1px 6px; font-size: 13px; }
+  pre { padding: 10px 12px; overflow-x: auto; font-size: 13px; white-space: pre-wrap; word-break: break-all; }
+  .tabs { display: flex; gap: 8px; margin: 8px 0 0; }
+  .tabs a { text-decoration: none; color: var(--accent); border: 1px solid var(--line); border-radius: 999px; padding: 3px 14px; background: var(--panel); }
+  .note { font-size: 13px; color: var(--muted); }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; border-bottom: 1px solid var(--line); padding: 7px 6px; vertical-align: top; }
+</style>
+</head>
+<body>
+<main>
+<h1>LeXWeft <span>Lite</span> のはじめかた</h1>
+<p class="lead">資料を入れると、課題と解決手段のつながりを Claude などの LLM と一緒に作り、図で見て、根拠の段落つきで探せるようになるアプリです。データはこの PC の中に保存します。</p>
+<div class="tabs"><a href="#mac">Mac の方</a><a href="#win">Windows の方</a><a href="#use">使い方</a><a href="#trouble">困ったとき</a></div>
+
+<div class="box">
+  <b>必要なもの</b>
+  <ul>
+    <li>macOS 12 以降、または Windows 10 / 11</li>
+    <li>インターネット接続（セットアップのときだけ。必要なものを取ってきます）</li>
+    <li>LLM とつなぐ場合は <a href="https://claude.ai/download">Claude Desktop</a>（無料プランでも使えます）</li>
+  </ul>
+  <p class="note">はじめる前に、同じフォルダの <code>TERMS.txt</code>（テスト版の利用条件）をお読みください。</p>
+</div>
+
+<h2 id="mac">Mac での入れ方（5 分ほど）</h2>
+<ol>
+  <li><b>フォルダを置き場所に移す。</b> 展開したフォルダを「書類」などに移します。<br><span class="note">セットアップのあとでフォルダを動かすと、起動と Claude との接続をやり直すことになります。</span></li>
+  <li><b>ターミナルを開く。</b> ⌘ + スペースで Spotlight を開き、「ターミナル」と入力して Enter。</li>
+  <li><b>セットアップを始める。</b> ターミナルに <code>bash</code> と半角スペースを 1 つ打ち、フォルダの中の <code>install.sh</code> をターミナルの画面にドラッグして、Enter。
+    <pre>bash /Users/あなたの名前/Documents/LeXWeftLite/install.sh</pre>
+    <span class="note">のように表示されれば正しい形です。</span></li>
+  <li><b>数分待つ。</b> 必要なものを取ってきて入れます。最後に「Claude Desktop に LeXWeft Lite を登録しますか」と聞かれたら <code>y</code> と打って Enter。</li>
+  <li><b>起動する。</b> フォルダにできた「<b>LeXWeft Lite.command</b>」をダブルクリック。ブラウザが開いて画面が出ます。<br><span class="note">使っている間は、一緒に開いたターミナルの窓を閉じないでください。終わるときはその窓を閉じます。</span></li>
+</ol>
+
+<h2 id="win">Windows での入れ方（5 分ほど）</h2>
+<ol>
+  <li><b>フォルダを置き場所に移す。</b> ZIP を右クリック →「すべて展開」し、できたフォルダを「ドキュメント」などに移します。</li>
+  <li><b>PowerShell を開く。</b> そのフォルダをエクスプローラーで開き、上のアドレス欄に <code>powershell</code> と入力して Enter。</li>
+  <li><b>セットアップを始める。</b> 次を貼り付けて Enter。
+    <pre>powershell -ExecutionPolicy Bypass -File .\install.ps1</pre></li>
+  <li><b>数分待つ。</b> 最後に「Claude Desktop に LeXWeft Lite を登録しますか」と聞かれたら <code>y</code> と打って Enter。</li>
+  <li><b>起動する。</b> フォルダにできた「<b>LeXWeft Lite.bat</b>」をダブルクリック。ブラウザが開いて画面が出ます。</li>
+</ol>
+
+<h2 id="use">使い方</h2>
+<h3>1. 資料を入れる</h3>
+<p>「資料」タブに、ファイル（md / txt / html / pdf / docx / csv）をドラッグします。フォルダのパスや URL も入れられます。まず試すなら、同じフォルダの <code>samples</code> の 3 件をどうぞ。</p>
+<h3>2. Claude に意味層を書いてもらう</h3>
+<p>Claude Desktop を一度終了して開き直し、次のように頼みます。</p>
+<pre>LeXWeft Lite の、まだ意味層が無い資料を読んで、課題と解決手段を根拠の段落つきで書いて。解決手段が課題を解く関係も結んで。</pre>
+<p class="note">Claude が LeXWeft Lite の道具を使ってよいか尋ねたら、許可してください。</p>
+<h3>3. 見る・直す</h3>
+<p>「意味層」タブで、課題と解決手段の一覧、別名、根拠の段落、関係を見て直せます。同じ意味の概念は「まとめる」で 1 つにします。「つながり」タブでは全体を図で見られます。</p>
+<h3>4. 探す</h3>
+<pre>LeXWeft Lite で「セル間の熱伝播」を解決する手段を、根拠の段落番号つきで一覧にして。言い換えも使って探して。</pre>
+<p>画面の「検索」タブでも探せます。言い換えは <code>|</code> で区切って並べます（例: <code>熱暴走 | 延焼 | thermal runaway</code>）。</p>
+
+<h2>データについて</h2>
+<table>
+  <tr><th>何が</th><th>どこに</th></tr>
+  <tr><td>資料と意味層</td><td>ホームフォルダの <code>LeXWeftLite</code>（アプリのフォルダとは別）</td></tr>
+  <tr><td>LLM に読ませた部分</td><td>つないだ LLM サービス（Claude Desktop なら Anthropic）に送られます。社外秘の資料は、所属先の決まりを確かめてから使ってください</td></tr>
+  <tr><td>書き出し</td><td>「意味層」タブの「意味層を Markdown で保存」</td></tr>
+</table>
+
+<h2>新しい版に替えるとき</h2>
+<ol>
+  <li>古いフォルダを消し、新しい ZIP を展開したフォルダを<b>同じ場所・同じ名前</b>に置きます。</li>
+  <li>入れたときと同じ手順で <code>install.sh</code>（Windows は <code>install.ps1</code>）を実行します。</li>
+</ol>
+<p class="note">資料と意味層はアプリのフォルダとは別の場所にあるので、そのまま残ります。置き場所や名前を変えた場合は、Claude への登録をやり直してください（セットアップの最後で <code>y</code>）。</p>
+
+<h2 id="trouble">困ったとき</h2>
+<table>
+  <tr><th>こんなとき</th><th>こうしてください</th></tr>
+  <tr><td>Claude に LeXWeft Lite の道具が出てこない</td><td>Claude Desktop を完全に終了して開き直す。それでも出なければ、セットアップを実行し直して最後に <code>y</code></td></tr>
+  <tr><td>「アドレスはすでに使用されています」と出る</td><td>LeXWeft Lite がもう起動しています。ブラウザで <code>http://127.0.0.1:8765/</code> を開いてください</td></tr>
+  <tr><td>PDF の本文が出ない</td><td>スキャン画像の PDF は文字を取り出せません。文字を選択できる PDF を使ってください</td></tr>
+  <tr><td>セットアップが途中で止まる</td><td>インターネットにつながっているか確かめて、もう一度実行してください。社内ネットワークで外部の取得が止められている場合があります</td></tr>
+</table>
+<p>そのほか気づいたことは、画面右上の「感想を送る」から教えてください。</p>
+</main>
+</body>
+</html>

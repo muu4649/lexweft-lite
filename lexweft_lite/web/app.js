@@ -36,7 +36,9 @@ function typeOptions(sel) { return (S.ov?.types || []).map(t => `<option ${t.nam
 async function refreshOverview() {
   S.ov = await api('/api/overview');
   const s = S.ov.stats;
-  $('#stats').textContent = `資料 ${num(s.documents)} ・ 概念 ${num(s.concepts)} ・ 関係 ${num(s.relations)}`;
+  $('#stats').textContent = `資料 ${num(s.documents)} ・ 概念 ${num(s.concepts)} ・ 関係 ${num(s.relations)} ・ v${S.ov.version}`;
+  const fb = S.ov.distribution?.feedback_url;
+  if (fb) { $('#feedback').href = fb; $('#feedback').hidden = false; }
 }
 
 function setTab(tab) {
@@ -423,6 +425,10 @@ loaders.connect = async () => {
       <h3>探すときの頼み方</h3>
       <pre class="code">LeXWeft Lite で「セル間の熱伝播」を解決する手段を、根拠の段落番号つきで一覧にして。言い換えも使って探して。</pre>
       <p class="small muted">Claude 以外でも、MCP に対応したクライアントなら同じ設定でつなげます。アプリ自身は LLM を呼ばず、API キーも使いません。</p></div>
+    <div class="panel"><h2>データの扱い</h2>
+      <p class="small">資料と意味層は、この PC の保存先にだけ保存します。アプリ自身は外部に送りません。</p>
+      <p class="small">ただし、Claude Desktop などの LLM につないで資料を読ませると、読ませた部分はその LLM サービスに送られます。社外秘の資料を扱うときは、お使いの LLM サービスの規約と社内の決まりを確かめてください。</p>
+      ${S.ov.distribution?.feedback_url ? `<p><a class="btn" href="${esc(S.ov.distribution.feedback_url)}" target="_blank" rel="noopener">感想を送る</a></p>` : ''}</div>
     <div class="panel"><h2>保存先</h2><div class="small">${esc(S.ov.home)}</div>
       <div class="small muted">資料ごとの Markdown は markdown/ に、取り込んだファイルの写しは files/ にあります。<code>lexweft export</code> で意味層 (layer.md) と資料をまとめて書き出せます。</div></div>`;
   $('#copyjson').onclick = () => guard(async () => { await navigator.clipboard.writeText(json); toast('コピーしました'); });
