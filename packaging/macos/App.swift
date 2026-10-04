@@ -4,7 +4,7 @@
 import Cocoa
 import WebKit
 
-final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate, WKScriptMessageHandlerWithReply {
     let appName = "LeXWeft Lite"
     var window: NSWindow!
     var webView: WKWebView!
@@ -36,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
         buildMenu()
         let config = WKWebViewConfiguration()
         config.preferences.javaScriptCanOpenWindowsAutomatically = false
+        // 画面の「フォルダを選ぶ」から呼ばれる (window.webkit.messageHandlers.pickFolder)
+        config.userContentController.addScriptMessageHandler(self, contentWorld: .page, name: "pickFolder")
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
         webView.uiDelegate = self
@@ -257,6 +259,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate, 
             guard result == .OK, let url = panel.url else { completionHandler(nil); return }
             try? FileManager.default.removeItem(at: url)
             completionHandler(url)
+        }
+    }
+
+    // MARK: フォルダを選ぶ
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage,
+                               replyHandler: @escaping (Any?, String?) -> Void) {
+        guard message.name == "pickFolder", isLocal(message.frameInfo.request.url) else { replyHandler(nil, "not allowed"); return }
+        let panel = NSOpenPanel()
+        panel.title = "取り込むフォルダを選ぶ"
+        panel.prompt = "このフォルダを選ぶ"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = fm.homeDirectoryForCurrentUser.appendingPathComponent("Documents")
+        panel.beginSheetModal(for: window) { result in
+            replyHandler(result == .OK ? panel.url?.path : nil, nil)
         }
     }
 

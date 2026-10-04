@@ -9,6 +9,7 @@ from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 
+from . import keywords as kw
 from . import layer as ly
 from . import runtime
 from .ingest import ingest, ingest_text
@@ -75,6 +76,15 @@ def lw_ingest(path_or_url: str) -> list[dict[str, Any]]:
 def lw_add_text(title: str, text: str) -> dict[str, Any]:
     """文章を 1 件の資料として保存する (会話でまとめたメモなど)."""
     return ingest_text(runtime.store(), title, text, markdown_dir=runtime.markdown_dir()).__dict__
+
+
+@server.tool()
+def lw_keywords(query: str | None = None, limit: int = 60) -> dict[str, Any]:
+    """資料によく出る語と、一緒に出る語の組を返す (自動で数えたもの). query を渡すと、その問いに当たる資料だけで数える.
+    資料が多いとき、どのテーマから意味層を書くか決めるのに使う."""
+    g = kw.graph(runtime.store(), limit=limit, query=query)
+    return {"documents": g["documents"], "keywords": [{"term": n["label"], "documents": n["df"]} for n in g["nodes"]],
+            "pairs": [{"a": e["source"][2:], "b": e["target"][2:], "documents": e["documents"]} for e in g["edges"]]}
 
 
 @server.tool()
@@ -174,6 +184,21 @@ def build_layer(document_id: str = "") -> str:
         "5. lw_write_concept で、根拠の段落番号 (paragraph_ids) を付けて書く。\n"
         "6. 解決手段が課題を解くと資料に書かれていれば、lw_relate(source=解決手段, target=課題, kind=解決する, paragraph_id=根拠) で結ぶ。\n"
         "7. 終わったら、書いた概念と関係の数、迷った点を短く報告する。"
+    )
+
+
+@server.prompt()
+def build_layer_for_topic(topic: str) -> str:
+    """資料が多いときに、1 つのテーマに絞って課題と解決手段の意味層を書く手順."""
+    return (
+        f"テーマ「{topic}」について、LeXWeft Lite の意味層を書いてください。資料が多いので、全部は読まずにテーマに関わる段落だけを使います。\n"
+        f"1. lw_keywords(query=\"{topic}\") で、このテーマの資料によく出る語を見る。\n"
+        "2. その語や言い換えを並べて lw_search(queries=[...], top_k=30) で段落を集める。\n"
+        "3. 段落から「課題」と「解決手段」を取り出す。名前は短い名詞句にし、段落に書かれていることだけを使う。\n"
+        "4. 足す前に lw_list_concepts(query=...) で同じ意味の概念を探し、あれば同じ名前を使う。言い換えは aliases に入れる。\n"
+        "5. lw_write_concept で、根拠の段落番号 (paragraph_ids) を付けて書く。\n"
+        "6. 解決手段が課題を解くと段落に書かれていれば、lw_relate(source=解決手段, target=課題, kind=解決する, paragraph_id=根拠) で結ぶ。\n"
+        "7. 終わったら、書いた概念と関係の数、足りないと感じた資料や観点を短く報告する。"
     )
 
 

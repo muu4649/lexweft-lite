@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import __version__, config
+from . import keywords as kw
 from . import layer as ly
 from . import runtime
 from .ingest import ingest, ingest_text
@@ -22,7 +24,28 @@ from .search import search as _search
 WEB_DIR = Path(__file__).parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "testserver"}
 
-app = FastAPI(title="LeXWeft Lite", version=__version__)
+
+def _backfill_keywords() -> None:
+    """前の版で取り込んだ資料の語を、裏で数えておく (キーワードのつながり用)."""
+    import threading
+
+    def run() -> None:
+        try:
+            while kw.backfill(runtime.store(), limit=50):
+                pass
+        except Exception:  # noqa: BLE001  画面の起動は止めない
+            pass
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+@asynccontextmanager
+async def _lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
+    _backfill_keywords()
+    yield
+
+
+app = FastAPI(title="LeXWeft Lite", version=__version__, lifespan=_lifespan)
 
 
 @app.middleware("http")
@@ -75,9 +98,86 @@ class TextIn(BaseModel):
     text: str
 
 
+class PrefixIn(BaseModel):
+    prefix: str
+
+
 @app.get("/api/documents")
-def documents() -> list[dict[str, Any]]:
-    return runtime.store().list_documents()
+def documents(q: str | None = None, limit: int = 300) -> dict[str, Any]:
+    s = runtime.store()
+    return {"total": s.count_documents(q), "documents": s.list_documents(q, limit)}
+
+
+@app.get("/api/documents/folders")
+def document_folders(depth: int = 4) -> list[dict[str, Any]]:
+    return runtime.store().folders(depth=max(1, min(depth, 12)))
+
+
+@app.post("/api/documents/delete-under")
+def delete_under(body: PrefixIn) -> dict[str, Any]:
+    if not body.prefix.strip() or body.prefix.strip() in ("/", "~"):
+        raise ValueError("消す範囲が広すぎます。フォルダを指定してください")
+    ids = runtime.store().delete_documents_under(body.prefix.strip())
+    for i in ids:
+        remove_document_file(i, runtime.markdown_dir())
+    if len(ids) >= 200:
+        runtime.store().compact()
+    return {"deleted": len(ids)}
+
+
+@app.get("/api/scan")
+def scan(path: str) -> dict[str, Any]:
+    from .loaders import scan as _scan
+
+    try:
+        return _scan(path.strip())
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"見つかりません: {e}") from e
+
+
+@app.post("/api/pick-folder")
+def pick_folder() -> dict[str, Any]:
+    """この PC のフォルダ選択の窓を出す (ブラウザで開いているとき用. Mac アプリは自前の窓を使う)."""
+    import platform
+    import subprocess
+
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            r = subprocess.run(["osascript", "-e", 'POSIX path of (choose folder with prompt "取り込むフォルダを選んでください")'],
+                               capture_output=True, text=True, timeout=600)
+        elif system == "Windows":
+            ps = ("Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                  "$d.Description = '取り込むフォルダを選んでください'; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }")
+            r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True, timeout=600)
+        else:
+            raise HTTPException(501, "この OS ではフォルダ選択の窓を出せません。パスを入力してください")
+    except subprocess.TimeoutExpired:
+        return {"path": None}
+    path = (r.stdout or "").strip()
+    return {"path": path or None}
+
+
+@app.post("/api/jobs")
+def start_job(body: PathIn) -> dict[str, Any]:
+    from . import jobs
+
+    return jobs.start(body.path).view()
+
+
+@app.get("/api/jobs/latest")
+def latest_job() -> dict[str, Any]:
+    from . import jobs
+
+    j = jobs.latest()
+    return j.view() if j else {}
+
+
+@app.post("/api/jobs/{job_id}/cancel")
+def cancel_job(job_id: str) -> dict[str, Any]:
+    from . import jobs
+
+    return jobs.cancel(job_id).view()
 
 
 @app.post("/api/documents/path")
@@ -269,6 +369,16 @@ def delete_relation(relation_id: int) -> dict[str, Any]:
 @app.get("/api/graph")
 def graph(documents: bool = True, type: str | None = None) -> dict[str, Any]:
     return ly.graph(runtime.store(), with_documents=documents, type_=type)
+
+
+@app.get("/api/keywords/graph")
+def keywords_graph(limit: int = 80, q: str | None = None) -> dict[str, Any]:
+    return kw.graph(runtime.store(), limit=max(10, min(limit, 200)), query=q)
+
+
+@app.get("/api/keywords/documents")
+def keyword_documents(term: str, limit: int = 50) -> dict[str, Any]:
+    return kw.documents_with(runtime.store(), term, limit)
 
 
 @app.get("/api/export/layer.md", response_class=PlainTextResponse)

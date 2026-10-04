@@ -86,6 +86,18 @@ CREATE TABLE IF NOT EXISTS relations (
     created_at TEXT NOT NULL,
     UNIQUE (src_id, dst_id, kind)
 );
+
+-- キーワードのつながり (keywords.py) 用: 資料ごとの語の出現数
+CREATE TABLE IF NOT EXISTS doc_terms (
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    term TEXT NOT NULL,
+    n INTEGER NOT NULL,
+    PRIMARY KEY (document_id, term)
+);
+CREATE INDEX IF NOT EXISTS idx_doc_terms_term ON doc_terms(term);
+CREATE TABLE IF NOT EXISTS doc_terms_done (
+    document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE
+);
 """
 
 DEFAULT_TYPES = (
@@ -176,13 +188,49 @@ class Store:
         doc["meta"] = json.loads(doc["meta"] or "{}")
         return doc
 
-    def list_documents(self) -> list[dict[str, Any]]:
-        rows = self.conn.execute(
-            "SELECT d.id, d.title, d.source, d.kind, d.added_at,"
-            " (SELECT COUNT(*) FROM paragraphs p WHERE p.document_id = d.id) AS paragraphs,"
-            " (SELECT COUNT(DISTINCT e.concept_id) FROM evidence e JOIN paragraphs p ON p.id = e.paragraph_id WHERE p.document_id = d.id) AS concepts"
-            " FROM documents d ORDER BY d.id DESC").fetchall()
-        return [dict(r) for r in rows]
+    def list_documents(self, query: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+        sql = ("SELECT d.id, d.title, d.source, d.kind, d.added_at,"
+               " (SELECT COUNT(*) FROM paragraphs p WHERE p.document_id = d.id) AS paragraphs,"
+               " (SELECT COUNT(DISTINCT e.concept_id) FROM evidence e JOIN paragraphs p ON p.id = e.paragraph_id WHERE p.document_id = d.id) AS concepts"
+               " FROM documents d")
+        params: list[Any] = []
+        if query:
+            sql += " WHERE d.title LIKE ? OR d.source LIKE ?"
+            params += [f"%{query}%", f"%{query}%"]
+        sql += " ORDER BY d.id DESC LIMIT ?"
+        params.append(-1 if limit is None else limit)
+        return [dict(r) for r in self.conn.execute(sql, params)]
+
+    def count_documents(self, query: str | None = None) -> int:
+        if query:
+            return int(self.conn.execute("SELECT COUNT(*) FROM documents WHERE title LIKE ? OR source LIKE ?", (f"%{query}%", f"%{query}%")).fetchone()[0])
+        return int(self.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
+
+    def folders(self, depth: int = 4, limit: int = 40) -> list[dict[str, Any]]:
+        """資料の出所をフォルダでまとめた件数 (depth はパスの先頭から数えた階層)."""
+        from collections import Counter
+        from pathlib import PurePath
+
+        counts: Counter = Counter()
+        for (src,) in self.conn.execute("SELECT source FROM documents"):
+            if "://" in src or src.startswith("text:"):
+                counts[src.split("://")[0] + "://" if "://" in src else "貼り付けた文章"] += 1
+                continue
+            parts = PurePath(src).parts[:-1]
+            counts[str(PurePath(*parts[: max(1, min(depth, len(parts)))])) if parts else src] += 1
+        return [{"folder": f, "documents": n} for f, n in counts.most_common(limit)]
+
+    def delete_documents_under(self, prefix: str) -> list[int]:
+        """出所がそのフォルダ (またはそのファイル) の資料をまとめて消し、消した資料 ID を返す."""
+        prefix = prefix.rstrip("/") or "/"
+        like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
+        ids = [int(r[0]) for r in self.conn.execute(
+            "SELECT id FROM documents WHERE source = ? OR source LIKE ? ESCAPE '\\'", (prefix, like))]
+        with self.tx() as c:
+            for i in range(0, len(ids), 500):
+                chunk = ids[i:i + 500]
+                c.execute(f"DELETE FROM documents WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        return ids
 
     def paragraphs_of(self, document_id: int, offset: int = 0, limit: int | None = None) -> list[dict[str, Any]]:
         """資料の段落を順に返す. offset は先頭からの段落数、limit は返す段落数 (None は最後まで)."""
@@ -198,6 +246,12 @@ class Store:
             f"SELECT p.id, p.document_id, p.ordinal, p.heading, p.text, d.title FROM paragraphs p JOIN documents d ON d.id = p.document_id WHERE p.id IN ({q})",
             ids).fetchall()
         return {int(r["id"]): dict(r) for r in rows}
+
+    def compact(self) -> None:
+        """まとめて消したあとに、全文索引を作り直してファイルを詰める."""
+        with self.tx() as c:
+            c.execute("INSERT INTO paragraphs_fts(paragraphs_fts) VALUES ('rebuild')")
+        self.conn.execute("VACUUM")
 
     def stats(self) -> dict[str, int]:
         one = lambda sql: int(self.conn.execute(sql).fetchone()[0])  # noqa: E731

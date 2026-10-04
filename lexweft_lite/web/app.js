@@ -58,29 +58,103 @@ async function load() {
 // ---------------- 資料 ----------------
 const loaders = {};
 loaders.docs = async () => {
-  S.docs = await api('/api/documents');
+  const [list, job] = await Promise.all([api('/api/documents?' + new URLSearchParams({q: S.docQ || '', limit: 300})), api('/api/jobs/latest')]);
+  S.docs = list.documents; S.docTotal = list.total; S.job = job && job.id ? job : null;
   if (S.doc) S.doc = await api(`/api/documents/${S.doc.id}`).catch(() => null);
+  if (S.showFolders) S.folders = await api('/api/documents/folders?depth=' + (S.folderDepth || 4));
   renderDocs();
+  if (S.job?.state === 'running') pollJob();
 };
+
+function jobHtml() {
+  const j = S.job;
+  if (S.scan) {
+    const sc = S.scan, many = sc.files > 1000;
+    const kinds = Object.entries(sc.by_suffix || {}).map(([k, n]) => `${esc(k)} ${num(n)}`).join(' ・ ');
+    return `<div class="panel" style="background:var(--bg)"><b>このフォルダを取り込みますか</b>
+      <div class="small" style="margin:6px 0;word-break:break-all">${esc(sc.path)}</div>
+      <div>取り込めるファイル <b>${num(sc.files)}${sc.truncated ? ' 以上' : ''}</b> 件 <span class="small muted">${kinds}</span></div>
+      ${sc.files === 0 ? '<div class="small muted">取り込める形式 (md / txt / html / pdf / docx / csv) のファイルがありません</div>' : ''}
+      ${many ? '<div class="small" style="color:var(--warn);margin-top:4px">多いです。テーマごとのフォルダに絞ると、見通しがよくなります</div>' : ''}
+      <div class="small muted" style="margin-top:4px">隠しフォルダ・アプリや開発用のフォルダ・ライセンス文は読みません</div>
+      <div class="row" style="margin-top:8px">${sc.files ? '<button class="btn primary" id="scango">取り込む</button>' : ''}<button class="btn" id="scanno">やめる</button></div></div>`;
+  }
+  if (!j) return '';
+  const pct = j.total ? Math.round(j.done * 100 / j.total) : 0;
+  const c = j.counts || {};
+  const parts = [['added', '追加'], ['updated', '更新'], ['unchanged', '変更なし'], ['empty', '本文なし'], ['error', '読めない']].filter(([k]) => c[k]).map(([k, l]) => `${l} ${num(c[k])}`).join(' ・ ');
+  const label = {running: '取り込んでいます', done: '取り込みました', cancelled: '止めました', failed: '取り込めませんでした'}[j.state] || j.state;
+  return `<div class="panel" style="background:var(--bg)"><div class="row" style="justify-content:space-between"><b>${label}</b>
+      ${j.state === 'running' ? '<button class="btn danger" id="jobstop">止める</button>' : '<button class="link small" id="jobclose">閉じる</button>'}</div>
+    <div class="small" style="word-break:break-all">${esc(j.target)}</div>
+    <div style="height:8px;background:var(--line);border-radius:4px;margin:8px 0;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--accent)"></div></div>
+    <div class="small">${num(j.done)} / ${num(j.total)} 件 ${parts ? '・ ' + parts : ''}</div>
+    ${j.current ? `<div class="small muted" style="word-break:break-all">${esc(j.current)}</div>` : ''}
+    ${j.error_count ? `<details class="small"><summary>読めなかったファイル ${num(j.error_count)} 件</summary>${j.errors.map(e => `<div>${esc(e)}</div>`).join('')}</details>` : ''}</div>`;
+}
+
+let jobTimer = null;
+function pollJob() {
+  clearTimeout(jobTimer);
+  jobTimer = setTimeout(async () => {
+    if (S.tab !== 'docs') return;
+    try {
+      S.job = await api('/api/jobs/latest');
+      const box = $('#jobbox');
+      if (box) { box.innerHTML = jobHtml(); bindJob(); }
+      if (S.job.state === 'running') pollJob(); else load();
+    } catch (e) { /* 次の読み込みで直る */ }
+  }, 1000);
+}
+
+async function pickFolder() {
+  // Mac アプリでは自前の窓、ブラウザではサーバーが OS の窓を出す
+  if (window.webkit?.messageHandlers?.pickFolder) return await window.webkit.messageHandlers.pickFolder.postMessage({});
+  return (await post('/api/pick-folder', {})).path;
+}
+
+async function prepare(path) {
+  if (!path) return;
+  if (/^https?:\/\//.test(path)) { S.job = await post('/api/jobs', {path}); S.scan = null; renderDocs(); pollJob(); return; }
+  S.scan = await api('/api/scan?' + new URLSearchParams({path}));
+  renderDocs();
+}
+
+function bindJob() {
+  const go = $('#scango'), no = $('#scanno'), stop = $('#jobstop'), close = $('#jobclose');
+  if (go) go.onclick = () => guard(async () => { S.job = await post('/api/jobs', {path: S.scan.path}); S.scan = null; renderDocs(); pollJob(); });
+  if (no) no.onclick = () => { S.scan = null; renderDocs(); };
+  if (stop) stop.onclick = () => guard(async () => { S.job = await post(`/api/jobs/${S.job.id}/cancel`, {}); });
+  if (close) close.onclick = () => { S.job = null; renderDocs(); };
+}
 
 function renderDocs() {
   const rows = S.docs.map(d => `<tr class="click ${S.doc?.id === d.id ? 'sel' : ''}" data-doc="${d.id}">
       <td>${esc(d.title)}<div class="small muted">${esc(d.kind)} ・ ${num(d.paragraphs)} 段落</div></td>
       <td class="small">${d.concepts ? num(d.concepts) + ' 概念' : '<span class="muted">未記述</span>'}</td></tr>`).join('');
+  const folders = S.showFolders ? `<div style="margin-top:8px">
+      <div class="row small"><span class="muted">まとめる階層</span><button class="btn" id="fdless">−</button><span>${S.folderDepth || 4}</span><button class="btn" id="fdmore">＋</button></div>
+      <table>${(S.folders || []).map(f => `<tr><td class="small" style="word-break:break-all">${esc(f.folder)}</td><td class="small" style="white-space:nowrap">${num(f.documents)} 件</td>
+        <td style="white-space:nowrap">${/^([A-Za-z]:)?[\\/]/.test(f.folder) ? `<button class="link small" data-delunder="${esc(f.folder)}">まとめて消す</button>` : ''}</td></tr>`).join('')}</table></div>` : '';
   $('#main').innerHTML = `<div class="cols">
     <div>
       <div class="panel">
         <h2>資料を入れる</h2>
-        <div class="drop" id="drop">ここにファイルを落とす、または <button class="link" id="pick">選ぶ</button><div class="small">md / txt / html / pdf / docx / csv</div></div>
+        <div class="row" style="margin-bottom:10px"><button class="btn primary" id="pickdir">フォルダを選ぶ</button><button class="btn" id="pick">ファイルを選ぶ</button></div>
+        <div class="drop" id="drop">ここにファイルを落としても入れられます<div class="small">md / txt / html / pdf / docx / csv</div></div>
         <input type="file" id="file" multiple hidden accept=".md,.markdown,.txt,.html,.htm,.pdf,.docx,.csv">
-        <h3>フォルダや URL から</h3>
-        <div class="row"><input type="text" id="path" placeholder="/Users/.../資料フォルダ または https://..."><button class="btn" id="addpath">取り込む</button></div>
+        <h3>パスや URL を入れる</h3>
+        <div class="row"><input type="text" id="path" placeholder="/Users/.../資料フォルダ または https://..." style="flex:1"><button class="btn" id="addpath">確かめる</button></div>
         <details style="margin-top:10px"><summary class="small">文章を貼り付ける</summary>
           <input type="text" id="ttitle" placeholder="題名" style="margin:8px 0"><textarea id="ttext" placeholder="本文"></textarea>
           <button class="btn" id="addtext" style="margin-top:6px">保存</button></details>
+        <div id="jobbox" style="margin-top:12px">${jobHtml()}</div>
       </div>
-      <div class="panel"><h2>資料 <span class="muted small">${num(S.docs.length)} 件</span></h2>
-        ${S.docs.length ? `<table>${rows}</table>` : '<div class="empty">まだ資料がありません</div>'}</div>
+      <div class="panel"><div class="row" style="justify-content:space-between"><h2 style="margin:0">資料 <span class="muted small">${num(S.docTotal)} 件</span></h2>
+          <button class="link small" id="togglefolders">${S.showFolders ? 'フォルダ別を閉じる' : 'フォルダ別に見る・消す'}</button></div>
+        ${folders}
+        <input type="text" id="docq" placeholder="題名・場所で絞る" value="${esc(S.docQ || '')}" style="margin:10px 0">
+        ${S.docs.length ? `<table>${rows}</table>${S.docTotal > S.docs.length ? `<div class="small muted" style="margin-top:6px">新しい ${num(S.docs.length)} 件を表示しています。題名や場所で絞ってください</div>` : ''}` : '<div class="empty">まだ資料がありません</div>'}</div>
     </div>
     <div id="docdetail">${docDetailHtml()}</div></div>`;
   bindDocs();
@@ -116,20 +190,29 @@ function docDetailHtml() {
 function bindDocs() {
   const drop = $('#drop'), file = $('#file');
   $('#pick').onclick = () => file.click();
+  $('#pickdir').onclick = () => guard(async () => { const path = await pickFolder(); if (path) { $('#path').value = path; await prepare(path); } });
   file.onchange = () => upload(file.files);
   drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
   drop.ondragleave = () => drop.classList.remove('over');
   drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files); };
-  $('#addpath').onclick = () => guard(async () => {
-    const path = $('#path').value.trim(); if (!path) return;
-    const r = await post('/api/documents/path', {path});
-    toast(summary(r)); load();
-  });
+  $('#addpath').onclick = () => guard(async () => prepare($('#path').value.trim()));
+  $('#path').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) guard(async () => prepare($('#path').value.trim())); };
   $('#addtext').onclick = () => guard(async () => {
     const r = await post('/api/documents/text', {title: $('#ttitle').value, text: $('#ttext').value});
     toast(summary([r])); load();
   });
+  $('#docq').onchange = e => { S.docQ = e.target.value.trim(); loaders.docs(); };
+  $('#togglefolders').onclick = () => { S.showFolders = !S.showFolders; loaders.docs(); };
+  const fd = d => { S.folderDepth = Math.max(1, Math.min(12, (S.folderDepth || 4) + d)); loaders.docs(); };
+  if ($('#fdless')) { $('#fdless').onclick = () => fd(-1); $('#fdmore').onclick = () => fd(1); }
+  $$('[data-delunder]').forEach(b => b.onclick = () => guard(async () => {
+    const f = b.dataset.delunder;
+    if (!confirm(`「${f}」の資料をまとめて消します。元のファイルは消しません。この資料を根拠にした意味層の結びつきは外れます。`)) return;
+    const r = await post('/api/documents/delete-under', {prefix: f});
+    S.doc = null; toast(`${num(r.deleted)} 件を消しました`); load();
+  }));
   $$('[data-doc]').forEach(tr => tr.onclick = () => guard(async () => { S.picked.clear(); S.doc = await api(`/api/documents/${tr.dataset.doc}`); renderDocs(); }));
+  bindJob();
   bindDocDetail();
 }
 
@@ -257,21 +340,47 @@ async function openDoc(id) {
 
 // ---------------- つながり ----------------
 loaders.graph = async () => {
-  S.graph = await api('/api/graph?' + new URLSearchParams({documents: S.gopts.documents, ...(S.gopts.type ? {type: S.gopts.type} : {})}));
+  if (!S.gopts.mode) S.gopts.mode = S.ov.stats.concepts ? 'layer' : 'keywords';
+  if (S.gopts.mode === 'keywords') {
+    S.graph = await api('/api/keywords/graph?' + new URLSearchParams({limit: S.gopts.limit || 80, ...(S.gopts.q ? {q: S.gopts.q} : {})}));
+  } else {
+    S.graph = await api('/api/graph?' + new URLSearchParams({documents: S.gopts.documents, ...(S.gopts.type ? {type: S.gopts.type} : {})}));
+  }
   renderGraph();
 };
 
 function renderGraph() {
-  const g = S.graph;
-  $('#main').innerHTML = `<div class="row" style="margin-bottom:10px">
-      <label><input type="checkbox" id="gdocs" ${S.gopts.documents ? 'checked' : ''}> 資料も出す</label>
-      <select id="gtype"><option value="">すべての型</option>${typeOptions(S.gopts.type)}</select>
+  const g = S.graph, kw = S.gopts.mode === 'keywords';
+  const modeSel = `<select id="gmode"><option value="keywords" ${kw ? 'selected' : ''}>キーワードのつながり (自動)</option><option value="layer" ${kw ? '' : 'selected'}>意味層 (課題・解決手段)</option></select>`;
+  const controls = kw
+    ? `<input type="text" id="gq" placeholder="テーマで絞る (例: 熱暴走 | 冷却)" value="${esc(S.gopts.q || '')}" style="width:260px">
+       <select id="glimit">${[40, 80, 120].map(n => `<option ${+(S.gopts.limit || 80) === n ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="small muted">語</span>`
+    : `<label><input type="checkbox" id="gdocs" ${S.gopts.documents ? 'checked' : ''}> 資料も出す</label>
+       <select id="gtype"><option value="">すべての型</option>${typeOptions(S.gopts.type)}</select>`;
+  let empty;
+  if (kw) {
+    empty = g.pending ? `資料の語を数えています (残り ${num(g.pending)} 件)。少し待ってから開き直してください。`
+      : (S.gopts.q ? '絞り込んだ資料に、共通して出る語がありません。別の言葉で試してください。' : 'まだ資料がありません。「資料」タブから入れてください。');
+  } else {
+    empty = 'まだ意味層がありません。「LLM と接続」の手順で Claude に課題と解決手段を書かせると、ここに出ます。<br>それまでは「キーワードのつながり (自動)」で全体を見られます。';
+  }
+  const legend = kw
+    ? `<div><span class="dot" style="background:#0e7490"></span> 語 (大きいほど多くの資料に出る)</div><div class="small muted">線: 同じ資料に一緒に出る</div>
+       <div class="small muted">${num(g.documents)} 件の資料から${g.pending ? ` ・ 残り ${num(g.pending)} 件を数えています` : ''}</div>`
+    : `${(g.types || []).map(t => `<div><span class="dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</div>`).join('')}${S.gopts.documents ? '<div><span class="dot" style="background:#9ca3af"></span> 資料</div>' : ''}<div class="small muted">実線: 関係 / 点線: 根拠</div>`;
+  $('#main').innerHTML = `<div class="row" style="margin-bottom:10px">${modeSel}${controls}
       <span class="muted small">ドラッグで移動、ホイールで拡大、点を押すと詳細</span></div>
-    <div class="graphwrap">${g.nodes.length ? '<svg id="graph"></svg>' : '<div class="empty">まだつながりがありません。概念を書くとここに出ます。</div>'}
-      <div class="legend">${(g.types || []).map(t => `<div><span class="dot" style="background:${esc(t.color)}"></span> ${esc(t.name)}</div>`).join('')}${S.gopts.documents ? '<div><span class="dot" style="background:#9ca3af"></span> 資料</div>' : ''}<div class="small muted">実線: 関係 / 点線: 根拠</div></div>
+    <div class="graphwrap">${g.nodes.length ? '<svg id="graph"></svg>' : `<div class="empty">${empty}</div>`}
+      <div class="legend">${legend}</div>
       <div class="side" id="gside" hidden></div></div>`;
-  $('#gdocs').onchange = e => { S.gopts.documents = e.target.checked; loaders.graph(); };
-  $('#gtype').onchange = e => { S.gopts.type = e.target.value; loaders.graph(); };
+  $('#gmode').onchange = e => { S.gopts.mode = e.target.value; loaders.graph(); };
+  if (kw) {
+    $('#gq').onchange = e => { S.gopts.q = e.target.value.trim(); loaders.graph(); };
+    $('#glimit').onchange = e => { S.gopts.limit = +e.target.value; loaders.graph(); };
+  } else {
+    $('#gdocs').onchange = e => { S.gopts.documents = e.target.checked; loaders.graph(); };
+    $('#gtype').onchange = e => { S.gopts.type = e.target.value; loaders.graph(); };
+  }
   if (g.nodes.length) drawGraph(g);
 }
 
@@ -339,6 +448,13 @@ function drawGraph(g) {
   }
   function loop() { if (!document.body.contains(svg)) return; if (alpha > .02) { tick(); alpha *= .985; paint(); } requestAnimationFrame(loop); }
   for (let i = 0; i < 200; i++) tick();
+  // 最初は全体が入るように縮尺を合わせる
+  const xs = nodes.map(p => p.x), ys = nodes.map(p => p.y);
+  const bw = Math.max(...xs) - Math.min(...xs) + 160, bh = Math.max(...ys) - Math.min(...ys) + 80;
+  view.k = Math.max(.25, Math.min(1.4, W / bw, H / bh));
+  view.x = W / 2 - (Math.min(...xs) + Math.max(...xs)) / 2 * view.k;
+  view.y = H / 2 - (Math.min(...ys) + Math.max(...ys)) / 2 * view.k;
+  alpha = .3;
   paint(); apply(); loop();
   svg.addEventListener('pointerdown', ev => { pan = {x: ev.clientX - view.x, y: ev.clientY - view.y}; svg.setPointerCapture(ev.pointerId); });
   svg.addEventListener('pointermove', ev => {
@@ -356,6 +472,17 @@ function drawGraph(g) {
 async function showNode(n) {
   const side = $('#gside'); side.hidden = false;
   await guard(async () => {
+    if (n.kind === 'keyword') {
+      const r = await api('/api/keywords/documents?' + new URLSearchParams({term: n.label, limit: 30}));
+      side.innerHTML = `<div class="row" style="justify-content:space-between"><b>${esc(n.label)}</b><button class="link" id="gclose" title="閉じる">×</button></div>
+        <div class="small muted">${num(r.total)} 件の資料に出る語</div>
+        <div class="row" style="margin:8px 0"><button class="btn" id="gsearch">この語で段落を探す</button></div>
+        ${r.documents.map(d => `<div class="small"><button class="link" data-opendoc="${d.id}">${esc(d.title)}</button> <span class="muted">${num(d.n)} 回</span></div>`).join('')}`;
+      $('#gclose').onclick = () => (side.hidden = true);
+      $('#gsearch').onclick = () => guard(async () => { S.searchQ = n.label; S.search = await api('/api/search?' + new URLSearchParams({q: n.label})); setTab('search'); });
+      $$('#gside [data-opendoc]').forEach(b => b.onclick = () => openDoc(+b.dataset.opendoc));
+      return;
+    }
     if (n.kind === 'document') {
       side.innerHTML = `<div class="row" style="justify-content:space-between"><b>${esc(n.label)}</b><button class="link" id="gclose" title="閉じる">×</button></div><div class="small muted">資料</div><div style="margin-top:8px"><button class="btn" id="gopen">資料を開く</button></div>`;
       $('#gopen').onclick = () => openDoc(+n.id.slice(1));

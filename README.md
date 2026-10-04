@@ -13,7 +13,7 @@
 | 保存 | md / txt / html / pdf / docx / csv、フォルダ、URL を取り込み、段落に分けて保存 |
 | Markdown 変換 | 資料ごとに、書誌（front matter）と段落番号 `[¶n]` 付きの Markdown を書き出す |
 | 意味層 | 型（既定は「課題」「解決手段」。自分で足せる）ごとの概念、別名、根拠の段落、概念どうしの関係 |
-| 可視化 | 概念と資料のつながりを図で見る。点を押すと根拠の段落が出る |
+| 可視化 | 取り込んだ時点で、よく出る語と一緒に出る語のつながり（キーワード）を自動で描く。意味層ができたら、概念と資料のつながりも描く |
 | 検索 | 段落の全文検索。言い換えを `\|` で区切って並べると、まとめて探す |
 | LLM と接続 | MCP サーバー。LLM が資料を読み、根拠の段落番号付きで意味層を書き、探す |
 
@@ -76,6 +76,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 | `lexweft serve` | 画面を開く |
 | `lexweft add <ファイル/フォルダ/URL>` | 取り込む |
 | `lexweft status` | 件数を見る |
+| `lexweft prune` | 隠しフォルダ・開発用のフォルダ・ライセンス文など、取り込まない規則に当たる資料を消す（元のファイルは消さない） |
 | `lexweft export [--out DIR]` | 資料ごとの Markdown と意味層（`layer.md`）を書き出す |
 | `lexweft mcp-config [--write]` | Claude Desktop に登録する設定を表示・書き込み |
 | `lexweft mcp` | MCP サーバー（stdio）として動く（Claude Desktop が呼ぶ） |

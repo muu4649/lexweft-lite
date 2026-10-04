@@ -105,6 +105,41 @@ def cmd_status(_: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    """前の版で入ってしまった、隠しフォルダ・開発用のフォルダ・ライセンス文などの資料を消す (元のファイルは消さない)."""
+    from collections import Counter
+
+    from .loaders import excluded_by_rules
+    from .markdown import remove_document_file
+
+    s = runtime.store()
+    targets = [(int(r["id"]), r["source"]) for r in s.conn.execute("SELECT id, source FROM documents")
+               if not r["source"].startswith(("text:", "http://", "https://", str(config.home() / "files")))
+               and excluded_by_rules(r["source"])]
+    total = s.count_documents()
+    print(f"資料 {total} 件のうち、規則に当たるもの {len(targets)} 件")
+    groups = Counter(str(Path(src).parent)[:90] for _, src in targets)
+    for folder, n in groups.most_common(15):
+        print(f"  {n:6d}  {folder}")
+    if not targets:
+        return 0
+    if not args.yes:
+        ans = input("これらを LeXWeft Lite から消します (元のファイルは消しません)。よろしいですか [y/N]: ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("消しませんでした。")
+            return 0
+    ids = [i for i, _ in targets]
+    with s.tx() as c:
+        for k in range(0, len(ids), 500):
+            chunk = ids[k:k + 500]
+            c.execute(f"DELETE FROM documents WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+    for i in ids:
+        remove_document_file(i, runtime.markdown_dir())
+    print(f"{len(ids)} 件を消しました。残り {s.count_documents()} 件。索引を詰めています…")
+    s.compact()
+    return 0
+
+
 def cmd_export(args: argparse.Namespace) -> int:
     from .markdown import layer_markdown, write_document_file
 
@@ -133,6 +168,9 @@ def main(argv: list[str] | None = None) -> int:
     sp.add_argument("targets", nargs="+")
     sp.set_defaults(func=cmd_add)
     sub.add_parser("status", help="件数を見る").set_defaults(func=cmd_status)
+    sp = sub.add_parser("prune", help="隠しフォルダ・開発用のフォルダ・ライセンス文などの資料を消す (元のファイルは消さない)")
+    sp.add_argument("--yes", action="store_true", help="確認を省く")
+    sp.set_defaults(func=cmd_prune)
     sp = sub.add_parser("export", help="資料ごとの Markdown と意味層 (layer.md) を書き出す")
     sp.add_argument("--out")
     sp.set_defaults(func=cmd_export)

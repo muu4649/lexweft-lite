@@ -6,6 +6,7 @@ import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import keywords
 from .chunker import _split_with_heads
 from .loaders import Loaded, load_path, load_url
 from .markdown import write_document_file
@@ -33,6 +34,7 @@ def ingest_loaded(store: Store, doc: Loaded, markdown_dir: Path | None = None) -
     if not paragraphs:
         return IngestResult(None, doc.title, doc.source, 0, "empty")
     doc_id = store.add_document(doc.title, doc.source, doc.kind, sha, doc.meta, paragraphs)
+    keywords.index_document(store, doc_id)
     md = str(write_document_file(store, doc_id, markdown_dir)) if markdown_dir else None
     return IngestResult(doc_id, doc.title, doc.source, len(paragraphs), "updated" if old is not None else "added", md)
 
