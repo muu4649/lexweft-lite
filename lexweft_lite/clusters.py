@@ -122,8 +122,11 @@ def status(store: Store, scope: str = ALL) -> dict[str, Any]:
     row = store.conn.execute("SELECT * FROM lscopes WHERE scope = ?", (scope,)).fetchone()
     where, params = scope_filter(scope)
     n_docs = int(store.conn.execute(f"SELECT COUNT(*) FROM documents d WHERE {where}", params).fetchone()[0])
+    # 前の版で作った意味層 (段落のベクトルが無い) も、作り直しが要るとみなす
+    no_model = bool(row and int(row["documents"]) >= 3 and int(row["k"]) >= 1
+                    and store.conn.execute("SELECT 1 FROM lmodels WHERE scope = ?", (scope,)).fetchone() is None)
     return {"scope": scope, "built_at": row["built_at"] if row else None,
-            "stale": (row["signature"] if row else None) != signature(store, scope),
+            "stale": (row["signature"] if row else None) != signature(store, scope) or no_model,
             "building": scope in _building, "error": _errors.get(scope),
             "documents": int(row["documents"]) if row else 0, "documents_now": n_docs,
             "clusters": int(row["k"]) if row else 0, "method": row["method"] if row else None,

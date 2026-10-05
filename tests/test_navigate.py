@@ -90,3 +90,11 @@ def test_route_api(home, tmp_path):
     left = [d for res in r["unread"]["results"] for d in res["unread"]]
     assert len(docs) == 2 and docs[0]["cluster_color"].startswith("#")
     assert left and not ({d["document_id"] for d in docs} & {d["document_id"] for d in left})   # 一覧に出た資料は読み残しに出さない
+
+
+def test_old_layer_without_model_is_stale(home, tmp_path):
+    s, scope, ids = _setup(tmp_path)
+    assert not cl.status(s, scope)["stale"]
+    s.conn.execute("DELETE FROM lmodels WHERE scope = ?", (scope,))   # 前の版で作った意味層のふり
+    s.conn.commit()
+    assert cl.status(s, scope)["stale"]
