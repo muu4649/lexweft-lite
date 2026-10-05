@@ -688,14 +688,14 @@ function drawGraph(g) {
     nodes.forEach((p, i) => nodeEls[i].setAttribute('transform', `translate(${p.x},${p.y})`));
   }
   function loop() { if (!document.body.contains(svg)) return; if (alpha > .02) { tick(); alpha *= .985; paint(); } requestAnimationFrame(loop); }
-  for (let i = 0; i < 200; i++) tick();
+  for (let i = 0; i < 400; i++) { tick(); alpha = Math.max(.05, alpha * .992); }   // 落ち着かせてから表示の大きさを合わせる
   // 最初は全体が入るように縮尺を合わせる
   const xs = nodes.map(p => p.x), ys = nodes.map(p => p.y);
-  const bw = Math.max(...xs) - Math.min(...xs) + 160, bh = Math.max(...ys) - Math.min(...ys) + 80;
+  const bw = Math.max(...xs) - Math.min(...xs) + 360, bh = Math.max(...ys) - Math.min(...ys) + 100;   // 名前の文字が切れない余白
   view.k = Math.max(.25, Math.min(1.4, W / bw, H / bh));
   view.x = W / 2 - (Math.min(...xs) + Math.max(...xs)) / 2 * view.k;
   view.y = H / 2 - (Math.min(...ys) + Math.max(...ys)) / 2 * view.k;
-  alpha = .3;
+  alpha = .04;
   paint(); apply(); loop();
   svg.addEventListener('pointerdown', ev => { pan = {x: ev.clientX - view.x, y: ev.clientY - view.y}; svg.setPointerCapture(ev.pointerId); });
   svg.addEventListener('pointermove', ev => {

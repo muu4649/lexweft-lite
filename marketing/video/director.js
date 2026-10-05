@@ -1,7 +1,8 @@
 // LeXWeft Lite のプレイ動画の台本. 画面の上に字幕・カーソル・タイトルを重ね、操作を順に再生する.
 (async () => {
   const DEMO = window.__DEMO_PATH__;
-  const MASK = [[DEMO.replace(/\/調べ物$/, '/'), '~/Documents/'], ['video/調べ物', 'Documents/調べ物']];
+  const MASK = [[DEMO.replace(/\/調べ物$/, '/home'), '~/LeXWeftLite'], [DEMO.replace(/\/調べ物$/, '/'), '~/Documents/'], ['video2/調べ物', 'Documents/調べ物'], ['video/調べ物', 'Documents/調べ物'],
+                [/\/Users\/[^\/\s"]+\/[^\s"]*?lexweft-lite/g, '~/Documents/LeXWeftLite'], [/\/Users\/[^\/\s"]+/g, '~']];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
   // ---- 見た目の部品 ----
@@ -33,8 +34,9 @@
   // 画面に出るパスを伏せる (画面が書き換わるたびに)
   const mask = root => {
     const w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT); let n;
-    while ((n = w.nextNode())) { let v = n.nodeValue, o = v; for (const [a, b] of MASK) v = v.split(a).join(b); if (v !== o) n.nodeValue = v; }
-    document.querySelectorAll('input').forEach(i => { for (const [a, b] of MASK) if (i.value.includes(a)) i.value = i.value.split(a).join(b); });
+    const rep = v => { for (const [a, b] of MASK) v = typeof a === 'string' ? v.split(a).join(b) : v.replace(a, b); return v; };
+    while ((n = w.nextNode())) { const o = n.nodeValue, v = rep(o); if (v !== o) n.nodeValue = v; }
+    document.querySelectorAll('input').forEach(i => { const v = rep(i.value); if (v !== i.value) i.value = v; });
   };
   new MutationObserver(() => mask(document.body)).observe(document.body, {childList: true, subtree: true, characterData: true});
 
@@ -78,7 +80,7 @@
   await title('PLAY MOVIE', 'LeXWeft <span>Lite</span>', 'フォルダを登録すると、資料の地図ができる', 3200);
 
   // 1. フォルダを登録して取り込む
-  await caption('① 資料の入ったフォルダを登録します', 'テーマごとのメモや報告書が 48 件入ったフォルダ（架空の資料）');
+  await caption('① 資料の入ったフォルダを登録します', 'テーマごとのメモが 60 件入ったフォルダ（架空の資料。同じ話題でも資料ごとに言い方が違う）');
   await sleep(1400);
   await click('#pickdir', 0.5, 0.5, true);
   // フォルダ選択の窓 (動画用の見本)
@@ -123,28 +125,51 @@
   await click('#tabs button[data-tab=docs]'); await sleep(900);
   const dq = await type('#docq', '電池の熱対策');
   dq.dispatchEvent(new Event('change'));
-  const row = await waitFor(() => [...document.querySelectorAll('[data-doc]')].find(tr => tr.textContent.includes('電池の熱対策メモ 02')));
+  const row = await waitFor(() => [...document.querySelectorAll('[data-doc]')].find(tr => tr.textContent.includes('電池の熱対策の検討メモ 02')));
   await click(row); window.scrollTo({top: 0}); await waitFor(() => $('#similar [data-opendoc]')); await sleep(800);
   await moveTo('#similar'); await sleep(2600);
 
   // 5. 検索
-  await caption('検索: 言い換えを | で並べて、まとめて探せます');
-  await click('#tabs button[data-tab=search]');
-  await type('#q', '熱伝播 | 延焼');
-  await click('#go'); await sleep(3000);
+  await caption('検索: 文字で探すと、同じ言葉が入った資料だけが見つかります', '「熱暴走」で探すと、同じ話題でも「延焼」「類焼」と書いた資料は出てきません');
+  await click('#tabs button[data-tab=search]'); await sleep(600);
+  await click('#m-text'); await sleep(400);
+  await type('#q', '熱暴走');
+  await click('#go'); await sleep(3200);
+  await caption('意味層でたどると、言い方が違う関連資料にも届きます', '質問は文で OK。関係するまとまり → 資料 → 段落の順に案内します');
+  await click('#m-route'); await sleep(500);
+  await type('#q', '熱暴走を防ぐ方法');
+  await click('#go'); await sleep(2600);
+  await moveTo('.why-sem'); await sleep(1600);
+  await caption('「あわせて確かめたい資料」で、読み残しも見えます', '関係が強いのに、一覧に出ていない資料を理由つきで示します');
+  const box = await waitFor(() => [...document.querySelectorAll('.panel h3')].find(h => h.textContent.includes('あわせて確かめたい')));
+  box.scrollIntoView({behavior: 'smooth', block: 'start'}); await sleep(1200);
+  await moveTo(box); await sleep(3600);
+  window.scrollTo({top: 0, behavior: 'smooth'}); await sleep(600);
 
   // 6. Claude で深める (Claude が書き込む様子の再現)
-  await caption('Claude とつなぐと、課題と解決手段を根拠つきで書けます', '例: 「まとまり『セル・相変化材料』の課題と解決手段を書いて」');
-  await click('#tabs button[data-tab=connect]'); await sleep(2600);
+  await caption('④ Claude とつなぐ: セットアップの最後に y を押すだけ', 'あとは Claude Desktop を開き直します（Mac は ⌘Q で終了してから開く）');
+  await click('#tabs button[data-tab=connect]'); await sleep(1200);
+  const askLi = await waitFor(() => [...document.querySelectorAll('ol.steps li')].find(li => li.textContent.includes('何件')));
+  await moveTo(askLi, 0.3, 0.5); await sleep(1800);
+  await caption('つながったかは、Claude に「資料は何件？」と聞くだけで分かります', '件数が返ってくれば OK。「使ってよいか」と聞かれたら「許可」');
+  await sleep(3400);
+  const askPre = await waitFor(() => [...document.querySelectorAll('pre.code')].find(p => p.textContent.includes('読み残し')));
+  askPre.scrollIntoView({behavior: 'smooth', block: 'center'}); await sleep(900);
+  await moveTo(askPre, 0.4, 0.5);
+  await caption('調べたいことは、チャットでふつうに頼むだけ', 'Claude が意味層をたどり、答える前に読み残しを確かめ、根拠の段落番号つきで答えます');
+  await sleep(4200);
+  window.scrollTo({top: 0, behavior: 'smooth'}); await sleep(500);
+  await caption('Claude は、課題と解決手段を根拠つきで書き込むこともできます');
+  await sleep(1200);
   const pid = async q => (await api('/api/search?' + new URLSearchParams({q}))).paragraphs.slice(0, 2).map(p => p.paragraph_id);
   const write = async (name, type, q) => post('/api/concepts', {name, type, paragraph_ids: await pid(q)});
   await click('#tabs button[data-tab=graph]');
   S.gopts.mode = 'layer'; S.gopts.documents = false; await loaders.graph(); await sleep(800);
   await caption('（Claude が書き込んでいくところ）', '課題と解決手段を、根拠の段落番号といっしょに保存します');
-  const steps = [['セル間の熱伝播', '課題', '熱伝播を抑え'], ['相変化材料シート', '解決手段', '相変化材料のシート'], ['断熱材との複合シート', '解決手段', '複合シート'],
-                 ['セル温度のばらつき', '課題', 'セル温度がばらつき'], ['対向流の並列流路', '解決手段', '対向流の並列流路'], ['出口側流路の狭幅化', '解決手段', '出口側の流路幅']];
+  const steps = [['セルの熱暴走の広がり', '課題', '熱暴走を抑えたい'], ['相変化材料による吸熱', '解決手段', '相変化材料を'], ['断熱材でセル間を遮る', '解決手段', '断熱材を'],
+                 ['冷却板の温度ばらつき', '課題', '温度ばらつきを小さく'], ['対向流の並列流路', '解決手段', '対向流の並列'], ['ピンフィンで熱を伝える', '解決手段', 'ピンフィンを並べ']];
   for (const [n, t, q] of steps) { await write(n, t, q); await refreshOverview(); await loaders.graph(); await sleep(700); }
-  for (const [a, b] of [['相変化材料シート', 'セル間の熱伝播'], ['断熱材との複合シート', 'セル間の熱伝播'], ['対向流の並列流路', 'セル温度のばらつき'], ['出口側流路の狭幅化', 'セル温度のばらつき']]) {
+  for (const [a, b] of [['相変化材料による吸熱', 'セルの熱暴走の広がり'], ['断熱材でセル間を遮る', 'セルの熱暴走の広がり'], ['対向流の並列流路', '冷却板の温度ばらつき'], ['ピンフィンで熱を伝える', '冷却板の温度ばらつき']]) {
     await post('/api/relations', {source: a, target: b, kind: '解決する'}); await loaders.graph(); await sleep(700);
   }
   await sleep(2600);
