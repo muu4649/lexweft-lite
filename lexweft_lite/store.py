@@ -281,9 +281,14 @@ class Store:
         return {int(r["id"]): dict(r) for r in rows}
 
     # ---------------- 登録したフォルダ ----------------
-    def add_source(self, path: str) -> None:
+    def add_source(self, path: str) -> str:
+        """フォルダを登録する. 別名のパス (/tmp → /private/tmp など) は、取り込んだ資料と同じ本当のパスにそろえる."""
+        import os
+
+        real = nfc(os.path.realpath(os.path.expanduser(path))).rstrip("/")
         with self.tx() as c:
-            c.execute("INSERT OR IGNORE INTO sources(path, added_at) VALUES (?, ?)", (nfc(path), now_iso()))
+            c.execute("INSERT OR IGNORE INTO sources(path, added_at) VALUES (?, ?)", (real, now_iso()))
+        return real
 
     def touch_source(self, path: str) -> None:
         with self.tx() as c:

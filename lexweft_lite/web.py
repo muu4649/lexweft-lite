@@ -205,8 +205,8 @@ def add_source(body: SourceIn) -> dict[str, Any]:
         raise ValueError("フォルダが見つかりません")
     if Path(path) in (Path.home(), Path("/"), Path(path).anchor and Path(Path(path).anchor)):
         raise ValueError("ホームフォルダや PC 全体は登録できません。資料の入ったフォルダを選んでください")
-    runtime.store().add_source(path.rstrip("/"))
-    return jobs.start(path.rstrip("/")).view()
+    real = runtime.store().add_source(path)
+    return jobs.start(real).view()
 
 
 @app.post("/api/sources/run")
@@ -360,6 +360,26 @@ def search(q: list[str] = Query(default=[]), top_k: int = 20) -> dict[str, Any]:
             if c["id"] not in {y["id"] for y in concepts}:
                 concepts.append(c)
     return {"queries": queries, "paragraphs": _search(s, queries, top_k=top_k), "concepts": concepts}
+
+
+@app.get("/api/route")
+def route(q: str, scope: str | None = None, max_documents: int = 8) -> dict[str, Any]:
+    """意味層をたどって探す: 関係するまとまり → 資料 → 段落と、あわせて確かめたい読み残しの資料."""
+    from . import navigate as nav
+
+    s = runtime.store()
+    r = nav.route(s, q, scope, max_documents)
+    shown = [d["document_id"] for res in r["results"] for d in res["documents"]]
+    u = nav.unread(s, q, read_document_ids=shown, limit=8)
+    # 画面で色分けするため、まとまりの名前と色を添える
+    for res in r["results"] + u["results"]:
+        cs = {c["id"]: c for c in cl.clusters(s, res["scope"])}
+        for d in res.get("documents", []) + res.get("unread", []):
+            c = cs.get(d.get("cluster"))
+            d["cluster_label"], d["cluster_color"] = (c["label"], c["color"]) if c else ("", "#6b7280")
+        for c in res.get("clusters", []):
+            c["color"] = cs.get(c["id"], {}).get("color", "#6b7280")
+    return {"route": r, "unread": u}
 
 
 # ---------------- 意味層 ----------------

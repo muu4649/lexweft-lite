@@ -12,6 +12,7 @@ from mcp.server.mcpserver import MCPServer
 from . import clusters as cl
 from . import keywords as kw
 from . import layer as ly
+from . import navigate as nav
 from . import runtime
 from .ingest import ingest, ingest_text
 from .markdown import document_markdown, layer_markdown
@@ -24,7 +25,9 @@ INSTRUCTIONS = (
     "意味層はあなた (LLM) が書きます。既定の型は「課題」と「解決手段」で、必要なら型を足せます。"
     "書くときは必ず根拠の段落番号を付け、資料に書かれていないことは書かないでください。"
     "概念を足す前に lw_list_concepts で同じ意味の概念が無いか確かめ、あれば同じ名前を使うか別名として足します。"
-    "探すときは lw_search に言い換え・別表記・英語表記を複数渡すと取りこぼしが減ります。"
+    "資料について調べるときは、意味層をたどります: lw_map で全体を見る → lw_route(質問) で関係するまとまり・資料・段落へ → "
+    "lw_read_document で読む → 必要なら lw_expand で近くの資料へ → 答える前に lw_unread で読み残しを確かめる。"
+    "答えには根拠の段落番号 [¶n] を付けます。"
 )
 
 server = MCPServer("lexweft-lite", instructions=INSTRUCTIONS)
@@ -55,7 +58,35 @@ def lw_list_documents(limit: int = 100) -> list[dict[str, Any]]:
 @server.tool()
 def lw_read_document(document_id: int, offset: int = 0, limit: int = 60) -> str:
     """資料を段落番号 [¶n] 付きの Markdown で読む. 長い資料は offset (先頭からの段落数) と limit で区切って読む."""
+    nav.mark_read(document_id)
     return _cap(document_markdown(runtime.store(), document_id, offset, limit))
+
+
+@server.tool()
+def lw_map(scope: str | None = None) -> dict[str, Any]:
+    """意味層の地図: 範囲 (登録したフォルダ) ごとのまとまりの名前・資料数・よく出る語と、近いまとまりどうしの組. 調べものの最初に呼ぶ."""
+    return nav.overview(runtime.store(), scope)
+
+
+@server.tool()
+def lw_route(question: str, scope: str | None = None, max_documents: int = 8) -> dict[str, Any]:
+    """質問から、意味層をたどって関係するまとまり → 資料 → 段落を順位つきで返す (意味の近さと文字の一致の両方で探す).
+    question は自然な文でよい。言い換えを | で並べるとさらに取りこぼしが減る (例: "電池の延焼を防ぐ方法 | 熱暴走 | 熱伝播").
+    呼ぶたびに新しい調べものとして、読んだ資料の記録を始め直す."""
+    return nav.route(runtime.store(), question, scope, max_documents)
+
+
+@server.tool()
+def lw_expand(document_ids: list[int], question: str | None = None) -> dict[str, Any]:
+    """読んだ資料の近くをたどる: 似た資料・同じまとまりの資料を、理由つきで返す (読んだ資料は除く)."""
+    return nav.expand(runtime.store(), document_ids, question)
+
+
+@server.tool()
+def lw_unread(question: str | None = None, read_document_ids: list[int] | None = None) -> dict[str, Any]:
+    """読み残しの確認: 質問に関係が強いのに、まだ読んでいない資料を理由つきで返す. 答える前に必ず呼ぶ.
+    読んだ資料は lw_read_document で開いたものを自動で数える (read_document_ids で足せる)."""
+    return nav.unread(runtime.store(), question, read_document_ids)
 
 
 @server.tool()
@@ -220,6 +251,20 @@ def build_layer(document_id: str = "") -> str:
         "5. lw_write_concept で、根拠の段落番号 (paragraph_ids) を付けて書く。\n"
         "6. 解決手段が課題を解くと資料に書かれていれば、lw_relate(source=解決手段, target=課題, kind=解決する, paragraph_id=根拠) で結ぶ。\n"
         "7. 終わったら、書いた概念と関係の数、迷った点を短く報告する。"
+    )
+
+
+@server.prompt()
+def investigate(question: str) -> str:
+    """意味層をたどって、関係する資料を読み残しなく調べて答える手順."""
+    return (
+        f"LeXWeft Lite の資料で「{question}」を調べて答えてください。意味層をたどり、関係があるのに読まれない資料が残らないようにします。\n"
+        "1. lw_map で、どんなまとまりがあるかを見る。\n"
+        f"2. lw_route(question=\"{question} | <言い換え> | <別の表記>\") で、関係するまとまり・資料・段落を見る。言い換えは 2〜4 個入れる。\n"
+        "3. 関係の強い資料を lw_read_document で読む (長ければ関係する段落の前後だけ)。\n"
+        "4. 読んだ資料の近くも関係しそうなら lw_expand(document_ids=[...]) でたどる。\n"
+        "5. 答える前に lw_unread を呼び、出てきた資料の check_paragraph を確かめる。関係があれば読み、なければ外した理由を短く書く。\n"
+        "6. 根拠の段落番号 [¶n] を付けて答える。最後に、読んだ資料の数と、読み残しを確かめた結果を 1 行で添える。"
     )
 
 

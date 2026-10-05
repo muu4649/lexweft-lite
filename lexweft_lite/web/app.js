@@ -753,23 +753,54 @@ function highlight(text, queries) {
   return esc(text).replace(re, '<mark>$1</mark>');
 }
 
+function routeHtml(R) {
+  const res = R.route.results.filter(x => x.documents.length);
+  if (!res.length) return '<div class="panel empty">関係する資料が見つかりませんでした。言い換えを | で並べて足してみてください。意味層ができていないフォルダは「取り込み」で作れます。</div>';
+  const badge = w => `<span class="chip ${w.startsWith('意味') ? 'why-sem' : 'why-txt'}">${esc(w)}</span>`;
+  const blocks = res.map(x => `
+    <div class="panel"><h3 style="margin-top:0">関係するまとまり</h3>
+      ${x.clusters.map(c => `<span class="chip"><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)} <span class="muted">${Math.round(c.share * 100)}%</span></span>`).join('')}</div>
+    ${x.documents.map(d => `<div class="panel"><div class="row" style="justify-content:space-between">
+        <button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button>
+        <span class="small muted"><span class="dot" style="background:${esc(d.cluster_color)}"></span> ${esc(d.cluster_label)}</span></div>
+      ${d.paragraphs.map(p => `<div class="para"><span class="pid">¶${p.paragraph_id}</span>${esc(p.text)}<div class="tags">${p.why.map(badge).join('')}</div></div>`).join('')}</div>`).join('')}`).join('');
+  const un = R.unread.results.flatMap(x => x.unread);
+  const unread = un.length ? `<div class="panel" style="border-color:var(--accent)"><h3 style="margin-top:0">あわせて確かめたい資料 <span class="small muted">（関係が強いのに、上の一覧には出ていない資料）</span></h3>
+      ${un.map(d => `<div class="para"><button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button>
+        <span class="small muted"> ・ <span class="dot" style="background:${esc(d.cluster_color)}"></span> ${esc(d.cluster_label)}</span>
+        <div class="small">${esc(d.check_paragraph.text)}</div><div class="tags">${d.why.map(badge).join('')}</div></div>`).join('')}</div>` : '';
+  return blocks + unread;
+}
+
 function renderSearch() {
+  const mode = S.searchMode || 'route';
   const r = S.search;
-  const concepts = r?.concepts?.length ? `<div class="panel"><h3 style="margin-top:0">概念</h3>${r.concepts.map(c => `<button class="link chip" data-c="${c.id}" style="border-color:${esc(typeColor(c.type))}">${esc(c.name)} <span class="muted">${esc(c.type)}</span></button>`).join('')}</div>` : '';
-  const paras = r ? (r.paragraphs.length ? r.paragraphs.map(p => `<div class="panel"><div class="row" style="justify-content:space-between">
+  let body = '';
+  if (mode === 'route' && S.route) body = routeHtml(S.route);
+  if (mode === 'text' && r) {
+    const concepts = r.concepts?.length ? `<div class="panel"><h3 style="margin-top:0">概念</h3>${r.concepts.map(c => `<button class="link chip" data-c="${c.id}" style="border-color:${esc(typeColor(c.type))}">${esc(c.name)} <span class="muted">${esc(c.type)}</span></button>`).join('')}</div>` : '';
+    body = concepts + (r.paragraphs.length ? r.paragraphs.map(p => `<div class="panel"><div class="row" style="justify-content:space-between">
         <button class="link" data-opendoc="${p.document_id}"><b>${esc(p.title)}</b></button><span class="small muted">${p.heading ? esc(p.heading) + ' ・ ' : ''}¶${p.paragraph_id} ・ 一致: ${p.matched.map(esc).join(' / ')}</span></div>
         <div class="para">${highlight(p.text, r.queries)}</div>${p.concepts.map(c => `<button class="link chip" data-c="${c.id}">${esc(c.name)}</button>`).join('')}</div>`).join('')
-      : '<div class="panel empty">見つかりませんでした。言い換えや別の表記を | で区切って足してみてください。</div>') : '';
-  $('#main').innerHTML = `<div class="panel"><div class="row"><input type="text" id="q" value="${esc(S.searchQ)}" placeholder="例: 熱暴走 | 熱連鎖 | thermal runaway" style="flex:1"><button class="btn primary" id="go">探す</button></div>
-      <div class="small muted" style="margin-top:6px">空白で区切った語はすべて含む段落を探します。| で区切ると言い換えとして別々に探し、順位をまとめます。</div></div>
-    ${concepts}${paras}`;
+      : '<div class="panel empty">見つかりませんでした。言い換えや別の表記を | で区切って足してみてください。</div>');
+  }
+  const hint = mode === 'route'
+    ? '質問を文で書けます。意味層をたどって、言い方が違っても関係する資料を探し、まだ見ていない関連資料も示します。'
+    : '空白で区切った語はすべて含む段落を探します。| で区切ると言い換えとして別々に探し、順位をまとめます。';
+  $('#main').innerHTML = `<div class="panel">
+      <div class="row" style="margin-bottom:8px"><button class="btn ${mode === 'route' ? 'primary' : ''}" id="m-route">意味層でたどる</button><button class="btn ${mode === 'text' ? 'primary' : ''}" id="m-text">文字で探す</button></div>
+      <div class="row"><input type="text" id="q" value="${esc(S.searchQ)}" placeholder="${mode === 'route' ? '例: 電池の熱暴走を防ぐ方法' : '例: 熱暴走 | 熱連鎖 | thermal runaway'}" style="flex:1"><button class="btn primary" id="go">探す</button></div>
+      <div class="small muted" style="margin-top:6px">${hint}</div></div>${body}`;
   const go = () => guard(async () => {
     S.searchQ = $('#q').value.trim(); if (!S.searchQ) return;
-    S.search = await api('/api/search?' + new URLSearchParams({q: S.searchQ}));
+    if (mode === 'route') S.route = await api('/api/route?' + new URLSearchParams({q: S.searchQ}));
+    else S.search = await api('/api/search?' + new URLSearchParams({q: S.searchQ}));
     renderSearch();
   });
   $('#go').onclick = go;
   $('#q').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) go(); };
+  $('#m-route').onclick = () => { S.searchMode = 'route'; renderSearch(); };
+  $('#m-text').onclick = () => { S.searchMode = 'text'; renderSearch(); };
   $$('[data-c]').forEach(b => b.onclick = () => openConcept(+b.dataset.c));
   $$('[data-opendoc]').forEach(b => b.onclick = () => openDoc(+b.dataset.opendoc));
 }
@@ -790,8 +821,9 @@ loaders.connect = async () => {
       <p>Claude Desktop で、プロンプトの一覧から <b>build_layer</b> を選ぶか、次のように頼みます。</p>
       <pre class="code">LeXWeft Lite の、まだ意味層が無い資料を読んで、課題と解決手段を根拠の段落つきで書いて。解決手段が課題を解く関係も結んで。</pre>
       <p class="small muted">まだ意味層が無い資料: ${pending.length ? pending.map(d => esc(d.title)).join('、') : 'ありません'}</p>
-      <h3>探すときの頼み方</h3>
-      <pre class="code">LeXWeft Lite で「セル間の熱伝播」を解決する手段を、根拠の段落番号つきで一覧にして。言い換えも使って探して。</pre>
+      <h3>調べるときの頼み方</h3>
+      <p class="small">プロンプト一覧の <b>investigate</b> を選ぶと、意味層をたどり、答える前に読み残しを確かめます。次のように頼んでも同じです。</p>
+      <pre class="code">LeXWeft Lite の意味層をたどって「セル間の熱伝播」を解決する手段を調べて。答える前に読み残しを確かめ、根拠の段落番号をつけて。</pre>
       <p class="small muted">Claude 以外でも、MCP に対応したクライアントなら同じ設定でつなげます。アプリ自身は LLM を呼ばず、API キーも使いません。</p></div>
     <div class="panel"><h2>データの扱い</h2>
       <p class="small">資料と意味層は、この PC の保存先にだけ保存します。アプリ自身は外部に送りません。</p>

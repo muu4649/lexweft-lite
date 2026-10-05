@@ -1,6 +1,6 @@
 [project]
 name = "lexweft-lite"
-version = "0.2.1"
+version = "0.3.0"
 description = "資料を蓄積し、LLM 向けの Markdown に変換し、課題と解決手段のつながり (意味層) を作って見て、MCP から引けるローカルアプリ"
 readme = "README.md"
 requires-python = ">=3.12"

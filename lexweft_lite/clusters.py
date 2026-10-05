@@ -58,6 +58,24 @@ CREATE TABLE IF NOT EXISTS ldoc_clusters (
     closeness REAL NOT NULL,      -- まとまりの中心とのコサイン類似度
     PRIMARY KEY (scope, document_id)
 );
+-- 質問や段落を同じベクトル空間に置くための計算の型 (語の一覧・idf・LSA の成分・まとまりの中心)
+CREATE TABLE IF NOT EXISTS lmodels (
+    scope TEXT PRIMARY KEY,
+    terms TEXT NOT NULL,          -- JSON [語, ...]
+    idf BLOB NOT NULL,            -- float32 [語の数]
+    components BLOB NOT NULL,     -- float32 [次元 × 語の数]
+    dims INTEGER NOT NULL,
+    centers BLOB NOT NULL,        -- float32 [まとまりの数 × 次元]
+    k INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lpara_vectors (
+    scope TEXT NOT NULL,
+    paragraph_id INTEGER NOT NULL REFERENCES paragraphs(id) ON DELETE CASCADE,
+    document_id INTEGER NOT NULL,
+    vec BLOB NOT NULL,
+    PRIMARY KEY (scope, paragraph_id)
+);
+CREATE INDEX IF NOT EXISTS idx_lpara_doc ON lpara_vectors(scope, document_id);
 CREATE TABLE IF NOT EXISTS ldoc_vectors (
     scope TEXT NOT NULL,
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -224,10 +242,14 @@ def build(store: Store, scope: str = ALL) -> dict[str, Any]:
     if n == 0 or not terms:
         _replace(store, scope, sig, n, 0, "none", t0, [], [], [])
         return status(store, scope)
-    tfidf = TfidfTransformer(sublinear_tf=True).fit_transform(counts)
-    dims = max(1, min(100, len(terms) - 1, n - 1))
+    tf = TfidfTransformer(sublinear_tf=True).fit(counts)
+    tfidf = tf.transform(counts)
+    # 次元は資料数よりずっと小さくする (資料数に近いと圧縮が効かず、言い換えどうしが近づかない)
+    dims = max(1, min(100, len(terms) - 1, n - 1, max(2, n // 4)))
+    svd = None
     if dims >= 2:
-        vecs = TruncatedSVD(n_components=dims, random_state=0).fit_transform(tfidf)
+        svd = TruncatedSVD(n_components=dims, random_state=0).fit(tfidf)
+        vecs = svd.transform(tfidf)
     else:
         vecs = tfidf.toarray()
     vecs = normalize(vecs).astype(np.float32)
@@ -267,16 +289,63 @@ def build(store: Store, scope: str = ALL) -> dict[str, Any]:
                      PALETTE[ci % len(PALETTE)], float(cx), float(cy)))
     drow = [(scope, d, int(assign[i]), float(xy[i, 0]), float(xy[i, 1]), float(closeness[i])) for i, d in enumerate(doc_ids)]
     vrow = [(scope, d, vecs[i].tobytes()) for i, d in enumerate(doc_ids)]
-    _replace(store, scope, sig, n, k, method, t0, crow, drow, vrow)
+    model = prow = None
+    if svd is not None:
+        idf = tf.idf_.astype(np.float32)
+        comp = svd.components_.astype(np.float32)
+        model = (scope, json.dumps(terms, ensure_ascii=False), idf.tobytes(), comp.tobytes(), int(comp.shape[0]),
+                 centers.astype(np.float32).tobytes(), int(k))
+        prow = _paragraph_vectors(store, scope, doc_ids, terms, idf, comp)
+    _replace(store, scope, sig, n, k, method, t0, crow, drow, vrow, model, prow)
     return status(store, scope)
 
 
-def _replace(store: Store, scope: str, sig: str, n: int, k: int, method: str, t0: float, crow, drow, vrow) -> None:
+def embed_counts(rows: list[Counter], terms: list[str], idf: np.ndarray, comp: np.ndarray) -> np.ndarray:
+    """語の数 (段落や質問ごと) を、意味層と同じベクトル空間に置く. 資料のベクトルと同じ手順 (重み → TF-IDF → LSA → 正規化)."""
+    from scipy.sparse import csr_matrix
+    from sklearn.preprocessing import normalize
+
+    col = {t: i for i, t in enumerate(terms)}
+    r, c, v = [], [], []
+    for i, cnt in enumerate(rows):
+        for t, num in cnt.items():
+            j = col.get(t)
+            if j is not None:
+                r.append(i)
+                c.append(j)
+                v.append(1.0 + math.log(num * kw._weight(t)))   # 資料と同じ (sklearn の sublinear_tf: 1 + log(tf))
+    x = csr_matrix((v, (r, c)), shape=(len(rows), len(terms)), dtype=np.float32)
+    x = x.multiply(idf.reshape(1, -1)).tocsr()
+    x = normalize(x)
+    return normalize(np.asarray(x @ comp.T)).astype(np.float32)
+
+
+def _paragraph_vectors(store: Store, scope: str, doc_ids: list[int], terms: list[str], idf: np.ndarray, comp: np.ndarray):
+    """範囲の段落ごとのベクトル (質問と意味で比べるため)."""
+    rows, meta = [], []
+    for d in doc_ids:
+        for para in store.paragraphs_of(d):
+            rows.append(kw.extract_terms([para["text"]]))
+            meta.append((int(para["id"]), d))
+    out = []
+    for i in range(0, len(rows), 5000):
+        vecs = embed_counts(rows[i:i + 5000], terms, idf, comp)
+        out += [(scope, pid, d, vecs[j].tobytes()) for j, (pid, d) in enumerate(meta[i:i + 5000])]
+    return out
+
+
+def _replace(store: Store, scope: str, sig: str, n: int, k: int, method: str, t0: float, crow, drow, vrow, model=None, prow=None) -> None:
     """範囲の意味層を、まとめて入れ替える (途中の状態を見せない)."""
     with store.tx() as c:
         c.execute("DELETE FROM lclusters WHERE scope = ?", (scope,))
         c.execute("DELETE FROM ldoc_clusters WHERE scope = ?", (scope,))
         c.execute("DELETE FROM ldoc_vectors WHERE scope = ?", (scope,))
+        c.execute("DELETE FROM lmodels WHERE scope = ?", (scope,))
+        c.execute("DELETE FROM lpara_vectors WHERE scope = ?", (scope,))
+        if model:
+            c.execute("INSERT INTO lmodels(scope, terms, idf, components, dims, centers, k) VALUES (?, ?, ?, ?, ?, ?, ?)", model)
+        if prow:
+            c.executemany("INSERT INTO lpara_vectors(scope, paragraph_id, document_id, vec) VALUES (?, ?, ?, ?)", prow)
         c.executemany("INSERT INTO lclusters(scope, id, label, terms, size, color, x, y) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", crow)
         c.executemany("INSERT INTO ldoc_clusters(scope, document_id, cluster_id, x, y, closeness) VALUES (?, ?, ?, ?, ?, ?)", drow)
         c.executemany("INSERT INTO ldoc_vectors(scope, document_id, vec) VALUES (?, ?, ?)", vrow)

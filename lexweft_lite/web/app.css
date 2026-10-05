@@ -81,3 +81,8 @@ ol.steps li { margin-bottom: 10px; }
 .legend { max-width: 340px; }
 #scopesel { max-width: 100%; }
 .mapcols #scopesel { width: 100%; }
+.chip.why-sem { background: #e0f2f7; color: #0e5466; }
+.chip.why-txt { background: #fdecdf; color: #8a3a12; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chip.why-sem { background: #133640; color: #9fdcec; } :root:not([data-theme="light"]) .chip.why-txt { background: #3a2216; color: #f3b48f; } }
+:root[data-theme="dark"] .chip.why-sem { background: #133640; color: #9fdcec; }
+:root[data-theme="dark"] .chip.why-txt { background: #3a2216; color: #f3b48f; }
