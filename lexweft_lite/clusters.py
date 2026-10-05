@@ -1,10 +1,11 @@
 """自動の意味層: 資料のベクトル、まとまり (クラスター)、まとまりの説明、地図の座標.
 
-取り込んだ資料から LLM を使わずに作る。
+意味層は保存先 (登録したフォルダ 1 つ、またはアプリ側の目録) ごとに 1 つ持つ。取り込んだ資料から LLM を使わずに作る。
   1. 資料ごとの語の数 (keywords.py が数えたもの) から TF-IDF を作り、LSA (切り詰めた特異値分解) で資料のベクトルにする
   2. ベクトルを k-means でまとめる。まとまりの数はシルエット係数で選ぶ
   3. まとまりごとに、ほかのまとまりより多く出る語 (クラス単位の TF-IDF) を並べて、どんな集まりかの説明にする
   4. 地図の座標は t-SNE (資料が多いときは主成分) で 2 次元にする
+  5. 作り直したときは、中身の資料が重なる前のまとまりに同じ番号と色を引き継ぎ、版の番号と「何が変わったか」を残す
 資料が増えたり減ったりしたら作り直す。
 """
 
@@ -12,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import sqlite3
 import threading
 import time
 from collections import Counter
@@ -20,21 +22,20 @@ from typing import Any
 import numpy as np
 
 from . import keywords as kw
-from .store import Store, nfc, now_iso
+from .store import Store, now_iso
 
 PALETTE = ("#0e7490", "#c2410c", "#7c3aed", "#15803d", "#b45309", "#be185d", "#1d4ed8", "#4d7c0f", "#9f1239", "#0f766e",
            "#a16207", "#6d28d9", "#047857", "#b91c1c", "#4338ca", "#0369a1", "#86198f", "#3f6212", "#9a3412", "#334155")
 
-ALL = "*"   # すべての資料 (フォルダを問わない)
+KEY = "folder"   # 表の scope 列に入れる値 (1 つの保存先に意味層は 1 つ)
 
 SCHEMA = """
--- 開発中の版で作った、フォルダの区別のない表は使わない
+-- 開発中の版で作った表は使わない
 DROP TABLE IF EXISTS layer_meta;
 DROP TABLE IF EXISTS clusters;
 DROP TABLE IF EXISTS doc_clusters;
 DROP TABLE IF EXISTS doc_vectors;
 
--- 意味層は範囲 (scope) ごとに持つ. scope は登録したフォルダのパス、または * (すべての資料)
 CREATE TABLE IF NOT EXISTS lscopes (
     scope TEXT PRIMARY KEY,
     built_at TEXT, signature TEXT, documents INTEGER NOT NULL DEFAULT 0, k INTEGER NOT NULL DEFAULT 0,
@@ -65,7 +66,7 @@ CREATE TABLE IF NOT EXISTS lmodels (
     idf BLOB NOT NULL,            -- float32 [語の数]
     components BLOB NOT NULL,     -- float32 [次元 × 語の数]
     dims INTEGER NOT NULL,
-    centers BLOB NOT NULL,        -- float32 [まとまりの数 × 次元]
+    centers BLOB NOT NULL,        -- float32 [まとまりの数 × 次元] (まとまりの番号順)
     k INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS lpara_vectors (
@@ -89,88 +90,58 @@ _building: set[str] = set()
 _errors: dict[str, str] = {}
 
 
-def ensure_schema(store: Store) -> None:
-    """Store が開くときに表を作る. ここでは何もしない (古い呼び出しのため残す)."""
+def migrate(conn: sqlite3.Connection) -> None:
+    """表を作り、前の版の表に列を足す. 前の版の「範囲ごと」の意味層は、作り直しの対象にする."""
+    have = {r[1] for r in conn.execute("PRAGMA table_info(lscopes)")}
+    for col, typ in (("version", "INTEGER NOT NULL DEFAULT 0"), ("changes", "TEXT NOT NULL DEFAULT '{}'")):
+        if have and col not in have:
+            conn.execute(f"ALTER TABLE lscopes ADD COLUMN {col} {typ}")
+    conn.commit()
+    if have:
+        # 前の版でフォルダのパスを範囲の名前にしていた行は、ここでは使わない (作り直す)
+        for t in ("lscopes", "lclusters", "ldoc_clusters", "lmodels", "lpara_vectors", "ldoc_vectors"):
+            conn.execute(f"DELETE FROM {t} WHERE scope != ?", (KEY,))
+        conn.commit()
 
 
-def scope_filter(scope: str, column: str = "d.source") -> tuple[str, list[Any]]:
-    """その範囲の資料に絞る SQL の条件."""
-    if scope == ALL:
-        return "1 = 1", []
-    p = nfc(scope).rstrip("/")
-    if not p:
-        raise ValueError("範囲が空です")
-    like = p.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
-    return f"({column} = ? OR {column} LIKE ? ESCAPE '\\')", [p, like]
-
-
-def scope_documents(store: Store, scope: str) -> list[int]:
-    where, params = scope_filter(scope)
-    return [int(r[0]) for r in store.conn.execute(
-        f"SELECT d.id FROM documents d JOIN doc_terms_done t ON t.document_id = d.id WHERE {where} ORDER BY d.id", params)]
-
-
-def signature(store: Store, scope: str) -> str:
-    """範囲の資料の集合が変わったか見るための印."""
-    where, params = scope_filter(scope)
-    row = store.conn.execute(f"SELECT COUNT(*) AS n, COALESCE(SUM(d.id), 0) AS s, COALESCE(MAX(d.added_at), '') AS a FROM documents d WHERE {where}",
-                             params).fetchone()
+def signature(store: Store) -> str:
+    """資料の集合が変わったか見るための印."""
+    row = store.conn.execute("SELECT COUNT(*) AS n, COALESCE(SUM(id), 0) AS s, COALESCE(MAX(added_at), '') AS a FROM documents").fetchone()
     return f"{row['n']}:{row['s']}:{row['a']}"
 
 
-def status(store: Store, scope: str = ALL) -> dict[str, Any]:
-    row = store.conn.execute("SELECT * FROM lscopes WHERE scope = ?", (scope,)).fetchone()
-    where, params = scope_filter(scope)
-    n_docs = int(store.conn.execute(f"SELECT COUNT(*) FROM documents d WHERE {where}", params).fetchone()[0])
+def status(store: Store) -> dict[str, Any]:
+    row = store.conn.execute("SELECT * FROM lscopes WHERE scope = ?", (KEY,)).fetchone()
+    n_docs = int(store.conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
     # 前の版で作った意味層 (段落のベクトルが無い) も、作り直しが要るとみなす
     no_model = bool(row and int(row["documents"]) >= 3 and int(row["k"]) >= 1
-                    and store.conn.execute("SELECT 1 FROM lmodels WHERE scope = ?", (scope,)).fetchone() is None)
-    return {"scope": scope, "built_at": row["built_at"] if row else None,
-            "stale": (row["signature"] if row else None) != signature(store, scope) or no_model,
-            "building": scope in _building, "error": _errors.get(scope),
+                    and store.conn.execute("SELECT 1 FROM lmodels WHERE scope = ?", (KEY,)).fetchone() is None)
+    return {"scope": store.key, "label": store.label, "built_at": row["built_at"] if row else None,
+            "stale": ((row["signature"] if row else None) != signature(store) and n_docs > 0) or no_model,
+            "building": store.path in _building, "error": _errors.get(store.path),
             "documents": int(row["documents"]) if row else 0, "documents_now": n_docs,
             "clusters": int(row["k"]) if row else 0, "method": row["method"] if row else None,
-            "seconds": row["seconds"] if row else None, "pending_terms": len(kw.pending(store))}
-
-
-def scopes(store: Store) -> list[dict[str, Any]]:
-    """選べる範囲: 登録したフォルダと、すべての資料."""
-    out = []
-    for src in store.list_sources():
-        st = status(store, src["path"])
-        out.append({"scope": src["path"], "label": _folder_label(src["path"]), **{k: st[k] for k in ("built_at", "stale", "building", "clusters", "documents_now", "error")}})
-    st = status(store, ALL)
-    out.append({"scope": ALL, "label": "すべての資料", **{k: st[k] for k in ("built_at", "stale", "building", "clusters", "documents_now", "error")}})
-    return out
-
-
-def _folder_label(path: str) -> str:
-    from pathlib import PurePath
-
-    parts = PurePath(path).parts
-    return "/".join(parts[-2:]) if len(parts) >= 2 else path
+            "seconds": row["seconds"] if row else None, "version": int(row["version"]) if row else 0,
+            "changes": json.loads(row["changes"] or "{}") if row else {}, "pending_terms": len(kw.pending(store))}
 
 
 # ---------------- 作る ----------------
-def _matrix(store: Store, scope: str, min_df: int = 2, max_terms: int = 20000):
-    """範囲の資料 × 語の行列 (疎)."""
+def _matrix(store: Store, min_df: int = 2, max_terms: int = 20000):
+    """資料 × 語の行列 (疎)."""
     from scipy.sparse import csr_matrix
 
-    doc_ids = scope_documents(store, scope)
+    doc_ids = [int(r[0]) for r in store.conn.execute("SELECT document_id FROM doc_terms_done ORDER BY document_id")]
     n = len(doc_ids)
     if n == 0:
         return doc_ids, [], None
-    store.conn.execute("CREATE TEMP TABLE IF NOT EXISTS scope_docs (id INTEGER PRIMARY KEY)")
-    store.conn.execute("DELETE FROM scope_docs")
-    store.conn.executemany("INSERT INTO scope_docs(id) VALUES (?)", [(d,) for d in doc_ids])
     max_df = max(min_df, int(n * 0.6)) if n >= 10 else n
     terms = [r["term"] for r in store.conn.execute(
-        "SELECT term, COUNT(*) AS df FROM doc_terms WHERE document_id IN (SELECT id FROM scope_docs) GROUP BY term"
-        " HAVING df >= ? AND df <= ? ORDER BY df DESC LIMIT ?", (min(min_df, n), max_df, max_terms))]
+        "SELECT term, COUNT(*) AS df FROM doc_terms GROUP BY term HAVING df >= ? AND df <= ? ORDER BY df DESC LIMIT ?",
+        (min(min_df, n), max_df, max_terms))]
     col = {t: i for i, t in enumerate(terms)}
     row_of = {d: i for i, d in enumerate(doc_ids)}
     rows, cols, vals = [], [], []
-    for r in store.conn.execute("SELECT document_id, term, n FROM doc_terms WHERE document_id IN (SELECT id FROM scope_docs)"):
+    for r in store.conn.execute("SELECT document_id, term, n FROM doc_terms"):
         j = col.get(r["term"])
         i = row_of.get(int(r["document_id"]))
         if j is None or i is None:
@@ -204,47 +175,76 @@ def _choose_k(vecs: np.ndarray) -> int:
     return best_k
 
 
-def _labels(counts, assign: np.ndarray, terms: list[str], k: int, top: int = 8) -> list[list[tuple[str, float]]]:
+def _labels(counts, assign: np.ndarray, terms: list[str], groups: list[int], top: int = 8) -> dict[int, list[tuple[str, float]]]:
     """クラス単位の TF-IDF: まとまりの中で多く、ほかでは少ない語."""
-    tf = np.vstack([np.asarray(counts[assign == c].sum(axis=0)).ravel() for c in range(k)])  # k × 語
+    tf = np.vstack([np.asarray(counts[assign == c].sum(axis=0)).ravel() for c in groups])  # まとまり × 語
     total = tf.sum(axis=0) + 1e-9
-    avg = tf.sum() / max(1, k)
+    avg = tf.sum() / max(1, len(groups))
     idf = np.log(1 + avg / total)
     weight = np.array([kw._weight(t) for t in terms])
     score = (tf / (tf.sum(axis=1, keepdims=True) + 1e-9)) * idf * weight
-    out = []
-    for c in range(k):
-        order = np.argsort(-score[c])
+    out: dict[int, list[tuple[str, float]]] = {}
+    for gi, c in enumerate(groups):
+        order = np.argsort(-score[gi])
         picked: list[tuple[str, float]] = []
         for j in order:
             t = terms[j]
-            if score[c, j] <= 0:
+            if score[gi, j] <= 0:
                 break
             # 片方がもう片方を含む語は、先に選んだほうだけにする
             if any(t in p or p in t for p, _ in picked):
                 continue
-            picked.append((t, float(score[c, j])))
+            picked.append((t, float(score[gi, j])))
             if len(picked) >= top:
                 break
-        out.append(picked)
+        out[c] = picked
     return out
 
 
-def build(store: Store, scope: str = ALL) -> dict[str, Any]:
-    """範囲 (登録したフォルダ、またはすべての資料) の自動の意味層を作り直す."""
+def _stable_ids(new_assign: np.ndarray, doc_ids: list[int], prev: dict[int, int]) -> dict[int, int]:
+    """新しいまとまり → 番号. 中身の資料が前のまとまりと重なれば、その番号を引き継ぐ (大きいまとまりから順に)."""
+    groups = [c for c, _ in Counter(new_assign.tolist()).most_common()]
+    used: set[int] = set()
+    mapping: dict[int, int] = {}
+    for c in groups:
+        members = [doc_ids[i] for i in np.where(new_assign == c)[0]]
+        overlap = Counter(prev[d] for d in members if d in prev)
+        for old, n in overlap.most_common():
+            if old not in used and n >= max(1, 0.3 * len(members)):
+                mapping[c] = old
+                used.add(old)
+                break
+    nxt = max(list(prev.values()) + [-1]) + 1
+    for c in groups:
+        if c not in mapping:
+            while nxt in used:
+                nxt += 1
+            mapping[c] = nxt
+            used.add(nxt)
+    return mapping
+
+
+def build(store: Store) -> dict[str, Any]:
+    """意味層を作り直す."""
     from sklearn.cluster import KMeans
     from sklearn.decomposition import PCA, TruncatedSVD
     from sklearn.feature_extraction.text import TfidfTransformer
     from sklearn.preprocessing import normalize
 
     kw.backfill(store)
-    sig = signature(store, scope)
+    sig = signature(store)
     t0 = time.time()
-    doc_ids, terms, counts = _matrix(store, scope)
+    prev = {int(r["document_id"]): int(r["cluster_id"]) for r in store.conn.execute(
+        "SELECT document_id, cluster_id FROM ldoc_clusters WHERE scope = ?", (KEY,))}
+    prev_labels = {int(r["id"]): r["label"] for r in store.conn.execute("SELECT id, label FROM lclusters WHERE scope = ?", (KEY,))}
+    prev_row = store.conn.execute("SELECT version FROM lscopes WHERE scope = ?", (KEY,)).fetchone()
+    version = (int(prev_row["version"]) if prev_row else 0) + 1
+    doc_ids, terms, counts = _matrix(store)
     n = len(doc_ids)
+    changes = {"added_documents": len(set(doc_ids) - set(prev)), "removed_documents": len(set(prev) - set(doc_ids))}
     if n == 0 or not terms:
-        _replace(store, scope, sig, n, 0, "none", t0, [], [], [])
-        return status(store, scope)
+        _replace(store, sig, n, 0, "none", t0, version, changes, [], [], [])
+        return status(store)
     tf = TfidfTransformer(sublinear_tf=True).fit(counts)
     tfidf = tf.transform(counts)
     # 次元は資料数よりずっと小さくする (資料数に近いと圧縮が効かず、言い換えどうしが近づかない)
@@ -259,17 +259,18 @@ def build(store: Store, scope: str = ALL) -> dict[str, Any]:
     k = _choose_k(vecs) if n >= 6 else 1
     if k > 1:
         km = KMeans(n_clusters=k, n_init=8, random_state=0).fit(vecs)
-        assign, centers = km.labels_, normalize(km.cluster_centers_)
+        raw = km.labels_
     else:
-        assign, centers = np.zeros(n, dtype=int), normalize(vecs.mean(axis=0, keepdims=True))
-    # 大きい順に番号を振り直す
-    order = [c for c, _ in Counter(assign.tolist()).most_common()]
-    remap = {old: new for new, old in enumerate(order)}
-    assign = np.array([remap[a] for a in assign])
-    centers = centers[order]
-    closeness = (vecs * centers[assign]).sum(axis=1)
+        raw = np.zeros(n, dtype=int)
+    # 前のまとまりと重なるものは同じ番号に
+    mapping = _stable_ids(raw, doc_ids, prev)
+    assign = np.array([mapping[c] for c in raw])
+    ids = sorted(set(assign.tolist()))
+    centers = normalize(np.vstack([vecs[assign == c].mean(axis=0) for c in ids])).astype(np.float32)
+    center_of = {c: centers[i] for i, c in enumerate(ids)}
+    closeness = np.array([float(vecs[i] @ center_of[assign[i]]) for i in range(n)])
     # 地図の座標
-    if n >= 5 and n <= 3000:
+    if 5 <= n <= 3000:
         from sklearn.manifold import TSNE
 
         xy = TSNE(n_components=2, perplexity=max(2.0, min(30.0, (n - 1) / 3)), init="pca", random_state=0, metric="cosine").fit_transform(vecs)
@@ -281,26 +282,29 @@ def build(store: Store, scope: str = ALL) -> dict[str, Any]:
         xy = np.array([[float(i), 0.0] for i in range(n)])
         method = "LSA"
     xy = (xy - xy.min(axis=0)) / (np.ptp(xy, axis=0) + 1e-9)
-    labels = _labels(counts, assign, terms, k)
+    labels = _labels(counts, assign, terms, ids)
     crow = []
-    for ci in range(k):
-        members = assign == ci
+    for c in ids:
+        members = assign == c
         cx, cy = xy[members].mean(axis=0)
-        top = labels[ci]
-        label = "・".join(t for t, _ in top[:3]) or f"まとまり {ci + 1}"
-        crow.append((scope, ci, label, json.dumps([[t, round(w, 6)] for t, w in top], ensure_ascii=False), int(members.sum()),
-                     PALETTE[ci % len(PALETTE)], float(cx), float(cy)))
-    drow = [(scope, d, int(assign[i]), float(xy[i, 0]), float(xy[i, 1]), float(closeness[i])) for i, d in enumerate(doc_ids)]
-    vrow = [(scope, d, vecs[i].tobytes()) for i, d in enumerate(doc_ids)]
+        top = labels[c]
+        label = "・".join(t for t, _ in top[:3]) or f"まとまり {c + 1}"
+        crow.append((KEY, c, label, json.dumps([[t, round(w, 6)] for t, w in top], ensure_ascii=False), int(members.sum()),
+                     PALETTE[c % len(PALETTE)], float(cx), float(cy)))
+    changes["new_clusters"] = [r[2] for r in crow if r[1] not in prev_labels]
+    changes["gone_clusters"] = [prev_labels[c] for c in prev_labels if c not in ids]
+    changes["kept_clusters"] = len([c for c in ids if c in prev_labels])
+    drow = [(KEY, d, int(assign[i]), float(xy[i, 0]), float(xy[i, 1]), float(closeness[i])) for i, d in enumerate(doc_ids)]
+    vrow = [(KEY, d, vecs[i].tobytes()) for i, d in enumerate(doc_ids)]
     model = prow = None
     if svd is not None:
         idf = tf.idf_.astype(np.float32)
         comp = svd.components_.astype(np.float32)
-        model = (scope, json.dumps(terms, ensure_ascii=False), idf.tobytes(), comp.tobytes(), int(comp.shape[0]),
-                 centers.astype(np.float32).tobytes(), int(k))
-        prow = _paragraph_vectors(store, scope, doc_ids, terms, idf, comp)
-    _replace(store, scope, sig, n, k, method, t0, crow, drow, vrow, model, prow)
-    return status(store, scope)
+        model = (KEY, json.dumps(terms, ensure_ascii=False), idf.tobytes(), comp.tobytes(), int(comp.shape[0]),
+                 json.dumps(ids).encode("utf-8") + b"\n" + centers.tobytes(), len(ids))
+        prow = _paragraph_vectors(store, doc_ids, terms, idf, comp)
+    _replace(store, sig, n, len(ids), method, t0, version, changes, crow, drow, vrow, model, prow)
+    return status(store)
 
 
 def embed_counts(rows: list[Counter], terms: list[str], idf: np.ndarray, comp: np.ndarray) -> np.ndarray:
@@ -323,8 +327,8 @@ def embed_counts(rows: list[Counter], terms: list[str], idf: np.ndarray, comp: n
     return normalize(np.asarray(x @ comp.T)).astype(np.float32)
 
 
-def _paragraph_vectors(store: Store, scope: str, doc_ids: list[int], terms: list[str], idf: np.ndarray, comp: np.ndarray):
-    """範囲の段落ごとのベクトル (質問と意味で比べるため)."""
+def _paragraph_vectors(store: Store, doc_ids: list[int], terms: list[str], idf: np.ndarray, comp: np.ndarray):
+    """段落ごとのベクトル (質問と意味で比べるため)."""
     rows, meta = [], []
     for d in doc_ids:
         for para in store.paragraphs_of(d):
@@ -333,86 +337,96 @@ def _paragraph_vectors(store: Store, scope: str, doc_ids: list[int], terms: list
     out = []
     for i in range(0, len(rows), 5000):
         vecs = embed_counts(rows[i:i + 5000], terms, idf, comp)
-        out += [(scope, pid, d, vecs[j].tobytes()) for j, (pid, d) in enumerate(meta[i:i + 5000])]
+        out += [(KEY, pid, d, vecs[j].tobytes()) for j, (pid, d) in enumerate(meta[i:i + 5000])]
     return out
 
 
-def _replace(store: Store, scope: str, sig: str, n: int, k: int, method: str, t0: float, crow, drow, vrow, model=None, prow=None) -> None:
-    """範囲の意味層を、まとめて入れ替える (途中の状態を見せない)."""
+def _replace(store: Store, sig: str, n: int, k: int, method: str, t0: float, version: int, changes: dict,
+             crow, drow, vrow, model=None, prow=None) -> None:
+    """意味層を、まとめて入れ替える (途中の状態を見せない)."""
     with store.tx() as c:
-        c.execute("DELETE FROM lclusters WHERE scope = ?", (scope,))
-        c.execute("DELETE FROM ldoc_clusters WHERE scope = ?", (scope,))
-        c.execute("DELETE FROM ldoc_vectors WHERE scope = ?", (scope,))
-        c.execute("DELETE FROM lmodels WHERE scope = ?", (scope,))
-        c.execute("DELETE FROM lpara_vectors WHERE scope = ?", (scope,))
+        for t in ("lclusters", "ldoc_clusters", "ldoc_vectors", "lmodels", "lpara_vectors"):
+            c.execute(f"DELETE FROM {t} WHERE scope = ?", (KEY,))
+        c.executemany("INSERT INTO lclusters(scope, id, label, terms, size, color, x, y) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", crow)
+        c.executemany("INSERT INTO ldoc_clusters(scope, document_id, cluster_id, x, y, closeness) VALUES (?, ?, ?, ?, ?, ?)", drow)
+        c.executemany("INSERT INTO ldoc_vectors(scope, document_id, vec) VALUES (?, ?, ?)", vrow)
         if model:
             c.execute("INSERT INTO lmodels(scope, terms, idf, components, dims, centers, k) VALUES (?, ?, ?, ?, ?, ?, ?)", model)
         if prow:
             c.executemany("INSERT INTO lpara_vectors(scope, paragraph_id, document_id, vec) VALUES (?, ?, ?, ?)", prow)
-        c.executemany("INSERT INTO lclusters(scope, id, label, terms, size, color, x, y) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", crow)
-        c.executemany("INSERT INTO ldoc_clusters(scope, document_id, cluster_id, x, y, closeness) VALUES (?, ?, ?, ?, ?, ?)", drow)
-        c.executemany("INSERT INTO ldoc_vectors(scope, document_id, vec) VALUES (?, ?, ?)", vrow)
-        c.execute("INSERT OR REPLACE INTO lscopes(scope, built_at, signature, documents, k, method, seconds) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                  (scope, now_iso(), sig, n, k, method, round(time.time() - t0, 1)))
+        c.execute("INSERT OR REPLACE INTO lscopes(scope, built_at, signature, documents, k, method, seconds, version, changes)"
+                  " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                  (KEY, now_iso(), sig, n, k, method, round(time.time() - t0, 1), version, json.dumps(changes, ensure_ascii=False)))
 
 
-def build_in_background(store: Store, scope: str = ALL, force: bool = False) -> bool:
-    """範囲の意味層が古ければ、裏で作り直す. 始めたら True."""
-    if scope in _building or (not force and not status(store, scope)["stale"]):
+def model_centers(blob: bytes, dims: int) -> tuple[list[int], np.ndarray]:
+    """lmodels.centers から、まとまりの番号と中心のベクトルを取り出す."""
+    head, _, body = blob.partition(b"\n")
+    try:
+        ids = json.loads(head.decode("utf-8"))
+        return ids, np.frombuffer(body, dtype=np.float32).reshape(len(ids), dims)
+    except (ValueError, UnicodeDecodeError):
+        arr = np.frombuffer(blob, dtype=np.float32).reshape(-1, dims)
+        return list(range(len(arr))), arr
+
+
+def build_in_background(store: Store, force: bool = False, after=None) -> bool:
+    """意味層が古ければ、裏で作り直す. 始めたら True."""
+    if store.path in _building or (not force and not status(store)["stale"]):
         return False
-    _building.add(scope)
-    _errors.pop(scope, None)
+    _building.add(store.path)
+    _errors.pop(store.path, None)
 
     def run() -> None:
         with _build_lock:            # 計算は 1 つずつ
             try:
-                build(store, scope)
+                build(store)
             except Exception as e:  # noqa: BLE001
-                _errors[scope] = str(e)
+                _errors[store.path] = str(e)
             finally:
-                _building.discard(scope)
+                _building.discard(store.path)
+                if after:
+                    after()
 
     threading.Thread(target=run, daemon=True).start()
     return True
 
 
-def refresh_registered(store: Store) -> list[str]:
-    """登録したフォルダのうち、資料が変わったものを作り直す. すべての資料の範囲は、作ってあれば作り直す."""
-    started = []
-    for src in store.list_sources():
-        if build_in_background(store, src["path"]):
-            started.append(src["path"])
-    if store.conn.execute("SELECT 1 FROM lscopes WHERE scope = ?", (ALL,)).fetchone() and build_in_background(store, ALL):
-        started.append(ALL)
-    return started
+def wait_idle(timeout: float = 120.0) -> bool:
+    """裏で動いている作り直しが終わるまで待つ (テストや終了のとき用). 終われば True."""
+    end = time.time() + timeout
+    while _building and time.time() < end:
+        time.sleep(0.05)
+    return not _building
 
 
 # ---------------- 読む ----------------
-def clusters(store: Store, scope: str = ALL) -> list[dict[str, Any]]:
+def clusters(store: Store) -> list[dict[str, Any]]:
     out = []
-    for r in store.conn.execute("SELECT * FROM lclusters WHERE scope = ? ORDER BY id", (scope,)):
+    for r in store.conn.execute("SELECT * FROM lclusters WHERE scope = ? ORDER BY size DESC, id", (KEY,)):
         d = dict(r)
         d["terms"] = json.loads(d["terms"])
         out.append(d)
     return out
 
 
-def map_data(store: Store, scope: str = ALL, max_points: int = 6000) -> dict[str, Any]:
+def map_data(store: Store, max_points: int = 6000) -> dict[str, Any]:
     pts = [dict(r) for r in store.conn.execute(
         "SELECT dc.document_id AS id, dc.cluster_id AS c, dc.x, dc.y, d.title FROM ldoc_clusters dc JOIN documents d ON d.id = dc.document_id"
-        " WHERE dc.scope = ? ORDER BY dc.closeness DESC LIMIT ?", (scope, max_points))]
-    return {"status": status(store, scope), "clusters": clusters(store, scope), "points": pts}
+        " WHERE dc.scope = ? ORDER BY dc.closeness DESC LIMIT ?", (KEY, max_points))]
+    return {"status": status(store), "clusters": clusters(store), "points": pts}
 
 
-def cluster_detail(store: Store, cluster_id: int, scope: str = ALL, limit: int = 60) -> dict[str, Any]:
-    row = store.conn.execute("SELECT * FROM lclusters WHERE scope = ? AND id = ?", (scope, cluster_id)).fetchone()
+def cluster_detail(store: Store, cluster_id: int, limit: int = 60) -> dict[str, Any]:
+    row = store.conn.execute("SELECT * FROM lclusters WHERE scope = ? AND id = ?", (KEY, cluster_id)).fetchone()
     if row is None:
         raise KeyError(f"まとまり {cluster_id} はありません")
     d = dict(row)
     d["terms"] = json.loads(d["terms"])
+    d["scope"] = store.key
     d["documents"] = [dict(r) for r in store.conn.execute(
         "SELECT d.id, d.title, d.kind, dc.closeness FROM ldoc_clusters dc JOIN documents d ON d.id = dc.document_id"
-        " WHERE dc.scope = ? AND dc.cluster_id = ? ORDER BY dc.closeness DESC LIMIT ?", (scope, cluster_id, limit))]
+        " WHERE dc.scope = ? AND dc.cluster_id = ? ORDER BY dc.closeness DESC LIMIT ?", (KEY, cluster_id, limit))]
     # 代表の段落: まとまりの語を多く含む段落 (中心に近い資料の中から)
     top_terms = [t for t, _ in d["terms"][:5]]
     reps = []
@@ -428,24 +442,14 @@ def cluster_detail(store: Store, cluster_id: int, scope: str = ALL, limit: int =
     return d
 
 
-def scope_of_document(store: Store, document_id: int) -> str | None:
-    """資料が入っている、意味層を作ってある範囲 (登録したフォルダを優先)."""
-    rows = [r["scope"] for r in store.conn.execute("SELECT scope FROM ldoc_vectors WHERE document_id = ?", (document_id,))]
-    folders = sorted((r for r in rows if r != ALL), key=len, reverse=True)
-    return folders[0] if folders else (ALL if ALL in rows else None)
-
-
-def similar_documents(store: Store, document_id: int, scope: str | None = None, limit: int = 8) -> list[dict[str, Any]]:
-    """同じ範囲の中で、ベクトルの近い資料."""
-    scope = scope or scope_of_document(store, document_id)
-    if scope is None:
-        return []
-    row = store.conn.execute("SELECT vec FROM ldoc_vectors WHERE scope = ? AND document_id = ?", (scope, document_id)).fetchone()
+def similar_documents(store: Store, document_id: int, limit: int = 8) -> list[dict[str, Any]]:
+    """同じ保存先 (フォルダ) の中で、ベクトルの近い資料."""
+    row = store.conn.execute("SELECT vec FROM ldoc_vectors WHERE scope = ? AND document_id = ?", (KEY, document_id)).fetchone()
     if row is None:
         return []
     q = np.frombuffer(row["vec"], dtype=np.float32)
     ids, mats = [], []
-    for r in store.conn.execute("SELECT document_id, vec FROM ldoc_vectors WHERE scope = ?", (scope,)):
+    for r in store.conn.execute("SELECT document_id, vec FROM ldoc_vectors WHERE scope = ?", (KEY,)):
         if int(r["document_id"]) == document_id:
             continue
         ids.append(int(r["document_id"]))
@@ -461,16 +465,16 @@ def similar_documents(store: Store, document_id: int, scope: str | None = None, 
     return [{"id": ids[i], "title": titles.get(ids[i], ""), "similarity": round(float(sims[i]), 3)} for i in order]
 
 
-def cluster_of_terms(store: Store, terms: list[str], scope: str = ALL) -> dict[str, int]:
+def cluster_of_terms(store: Store, terms: list[str]) -> dict[str, int]:
     """語ごとに、いちばん強く出るまとまり (キーワードのつながりの色分け用)."""
     if not terms:
         return {}
     q = ",".join("?" * len(terms))
     best: dict[str, tuple[float, int]] = {}
-    sizes = {int(r["id"]): int(r["size"]) for r in store.conn.execute("SELECT id, size FROM lclusters WHERE scope = ?", (scope,))}
+    sizes = {int(r["id"]): int(r["size"]) for r in store.conn.execute("SELECT id, size FROM lclusters WHERE scope = ?", (KEY,))}
     for r in store.conn.execute(
             f"SELECT t.term, dc.cluster_id AS c, COUNT(*) AS n FROM doc_terms t JOIN ldoc_clusters dc ON dc.document_id = t.document_id AND dc.scope = ?"
-            f" WHERE t.term IN ({q}) GROUP BY t.term, dc.cluster_id", [scope, *terms]):
+            f" WHERE t.term IN ({q}) GROUP BY t.term, dc.cluster_id", [KEY, *terms]):
         share = r["n"] / max(1, sizes.get(int(r["c"]), 1)) * math.log(1 + r["n"])
         if r["term"] not in best or share > best[r["term"]][0]:
             best[r["term"]] = (share, int(r["c"]))

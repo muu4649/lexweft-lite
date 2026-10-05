@@ -89,10 +89,11 @@ def main() -> int:
     folder = tmp / "資料"
     folder.mkdir()
     files = make_corpus(folder)
-    s = runtime.store()
-    scope = s.add_source(str(folder))
-    ingest(s, str(folder))
-    cl.build(s, scope)
+    lib = runtime.library()
+    row = lib.register(str(folder))
+    s = lib.store_for_folder(row["path"])
+    ingest(s, row["path"], s.markdown_dir)
+    cl.build(s)
     id_of = {Path(d["source"]).name: d["id"] for d in s.list_documents()}
     rows = []
     for theme, t in THEMES.items():
@@ -110,13 +111,13 @@ def main() -> int:
 
         a = {h["document_id"] for h in search(s, [t["alt"][0].split()[0]], top_k=10)}
         b = {h["document_id"] for h in search(s, [t["alt"][0].split()[0], *t["alt"]], top_k=10)}
-        r = nav.route(s, t["q"], max_documents=8)
-        c = {d["document_id"] for res in r["results"] for d in res["documents"]}
+        r = nav.route(lib, t["q"], max_documents=8)
+        c = {d["document_id"] for d in r["documents"]}
         for d in c:
             nav.mark_read(d)
-        u = nav.unread(s, t["q"], limit=10)
-        d_ = c | {x["document_id"] for res in u["results"] for x in res["unread"]}
-        e_ = c | {x["document_id"] for res in nav.expand(s, sorted(c), t["q"], limit=10)["results"] for x in res["documents"]}
+        u = nav.unread(lib, t["q"], limit=10)
+        d_ = c | {x["document_id"] for x in u["unread"]}
+        e_ = c | {x["document_id"] for x in nav.expand(lib, sorted(c), t["q"], limit=10)["documents"]}
         rows.append((theme, t["q"], recall(a), recall(b), recall(c), recall(d_), recall(e_), prec(a), prec(c), prec(d_), prec(e_)))
     lines = ["# 意味層をたどったときの到達 (架空の資料 60 件)", "",
              "同じ話題の 15 件の資料は、言い方を変えて書いてある（例: 熱暴走 / 延焼 / 類焼 / 熱連鎖 / 発火の連鎖）。質問は 1 つの言い方だけを使う。",

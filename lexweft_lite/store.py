@@ -15,7 +15,7 @@ SCHEMA = """
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS documents (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     title TEXT NOT NULL,
     source TEXT NOT NULL UNIQUE,
     kind TEXT NOT NULL DEFAULT 'file',
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 
 CREATE TABLE IF NOT EXISTS paragraphs (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     ordinal INTEGER NOT NULL,
     heading TEXT NOT NULL DEFAULT '',
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS types (
 );
 
 CREATE TABLE IF NOT EXISTS concepts (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     name_norm TEXT NOT NULL UNIQUE,
     type TEXT NOT NULL REFERENCES types(name) ON UPDATE CASCADE,
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS evidence (
 CREATE INDEX IF NOT EXISTS idx_evidence_paragraph ON evidence(paragraph_id);
 
 CREATE TABLE IF NOT EXISTS relations (
-    id INTEGER PRIMARY KEY,
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     src_id INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
     dst_id INTEGER NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,
@@ -99,13 +99,27 @@ CREATE TABLE IF NOT EXISTS doc_terms_done (
     document_id INTEGER PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE
 );
 
--- 取り込むフォルダの登録
+-- 取り込むフォルダの登録 (アプリ側の目録でだけ使う)
 CREATE TABLE IF NOT EXISTS sources (
     path TEXT PRIMARY KEY,
     added_at TEXT NOT NULL,
     last_run TEXT
 );
+
+-- この保存先の情報 (番号の範囲など)
+CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 """
+
+# 資料・段落・概念・関係の番号は、保存先ごとに範囲を分ける (フォルダをまたいでも番号が重ならないように)
+BASE = 10_000_000
+ID_TABLES = ("documents", "paragraphs", "concepts", "relations")
+# 番号を振り直すときに動かす列 (表, 列)
+ID_COLUMNS = (("documents", "id"), ("paragraphs", "id"), ("paragraphs", "document_id"), ("concepts", "id"),
+              ("aliases", "concept_id"), ("evidence", "concept_id"), ("evidence", "paragraph_id"),
+              ("relations", "id"), ("relations", "src_id"), ("relations", "dst_id"), ("relations", "paragraph_id"),
+              ("doc_terms", "document_id"), ("doc_terms_done", "document_id"),
+              ("ldoc_clusters", "document_id"), ("ldoc_vectors", "document_id"),
+              ("lpara_vectors", "paragraph_id"), ("lpara_vectors", "document_id"))
 
 DEFAULT_TYPES = (
     ("課題", "資料が解こうとしている問題・困りごと", "#c2410c", 1),
@@ -128,21 +142,98 @@ def now_iso() -> str:
 
 
 class Store:
-    def __init__(self, path: str | Path):
+    """1 つの保存先 (アプリ側の目録、または登録したフォルダ 1 つ).
+
+    root: フォルダの保存先なら、そのフォルダ. 資料の出所はフォルダからの相対パスで持つ (フォルダを動かしても壊れない)。
+    store_no: 番号の範囲 (store_no × BASE から). アプリ側の目録は 0。
+    """
+
+    def __init__(self, path: str | Path, root: str | Path | None = None, store_no: int = 0, key: str = "central",
+                 label: str = "", markdown_dir: str | Path | None = None):
         self.path = str(path)
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self.conn.execute("PRAGMA journal_mode = WAL")
+        self.root = Path(root) if root else None
+        self.key = key
+        self.label = label or key
+        self.markdown_dir = Path(markdown_dir) if markdown_dir else None
+        Path(self.path).parent.mkdir(parents=True, exist_ok=True)
+        # 接続は処理 (スレッド) ごとに分ける. 1 つの接続を画面の処理と裏の作り直しで同時に使うと壊れるため
+        self._local = threading.local()
+        self._conns: list[sqlite3.Connection] = []
+        self._closed = False
         self._lock = threading.RLock()
+        first = self.conn
+        # フォルダの中の保存先は 1 つのファイルにまとめる (フォルダをコピー・移動しても途中のデータが分かれない)
+        first.execute("PRAGMA journal_mode = DELETE" if self.root else "PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
         from .clusters import SCHEMA as LAYER_SCHEMA   # 自動の意味層 (まとまり・地図・ベクトル)
 
         self.conn.executescript(LAYER_SCHEMA)
+        from .clusters import migrate as layer_migrate
+
+        layer_migrate(self.conn)
         self._normalize_sources()
         with self.tx() as c:
             for name, desc, color, ordinal in DEFAULT_TYPES:
                 c.execute("INSERT OR IGNORE INTO types(name, description, color, ordinal) VALUES (?, ?, ?, ?)", (name, desc, color, ordinal))
+        self.store_no = self._ensure_range(store_no)
+
+    # ---------------- 番号の範囲 ----------------
+    def meta(self, key: str, default: str | None = None) -> str | None:
+        row = self.conn.execute("SELECT value FROM store_meta WHERE key = ?", (key,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        with self.tx() as c:
+            c.execute("INSERT OR REPLACE INTO store_meta(key, value) VALUES (?, ?)", (key, str(value)))
+
+    def _ensure_range(self, store_no: int) -> int:
+        """番号の範囲を決める. 前に別の番号で作った保存先 (別の PC から持ってきたフォルダなど) なら、番号を振り直す."""
+        old = self.meta("store_no")
+        if old is not None and int(old) != store_no:
+            self.renumber(int(old), store_no)
+        elif old is None:
+            self.set_meta("store_no", str(store_no))
+        if store_no:
+            with self.tx() as c:
+                for t in ID_TABLES:
+                    row = c.execute("SELECT seq FROM sqlite_sequence WHERE name = ?", (t,)).fetchone()
+                    floor = store_no * BASE
+                    if row is None:
+                        c.execute("INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)", (t, floor))
+                    elif int(row[0]) < floor:
+                        c.execute("UPDATE sqlite_sequence SET seq = ? WHERE name = ?", (floor, t))
+        return store_no
+
+    def renumber(self, old_no: int, new_no: int) -> None:
+        """番号の範囲を old_no から new_no へ移す (資料・段落・概念・関係と、それを指す列すべて)."""
+        delta = (new_no - old_no) * BASE
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            with self.tx() as c:
+                tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+                for t, col in ID_COLUMNS:
+                    if t in tables:
+                        c.execute(f"UPDATE {t} SET {col} = {col} + ? WHERE {col} IS NOT NULL", (delta,))
+                c.execute("UPDATE sqlite_sequence SET seq = seq + ? WHERE name IN (%s)" % ",".join("?" * len(ID_TABLES)), (delta, *ID_TABLES))
+                c.execute("INSERT INTO paragraphs_fts(paragraphs_fts) VALUES ('rebuild')")
+                c.execute("INSERT OR REPLACE INTO store_meta(key, value) VALUES ('store_no', ?)", (str(new_no),))
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
+
+    # ---------------- 出所のパス (フォルダの保存先では相対パスで持つ) ----------------
+    def _src_in(self, source: str) -> str:
+        source = nfc(source)
+        if self.root and not source.startswith(("http://", "https://", "text:")):
+            try:
+                return Path(source).relative_to(self.root).as_posix()
+            except ValueError:
+                return source
+        return source
+
+    def _src_out(self, stored: str) -> str:
+        if self.root and stored and not stored.startswith(("/", "http://", "https://", "text:")) and ":" not in stored[:3]:
+            return str(self.root / stored)
+        return stored
 
     def _normalize_sources(self) -> None:
         """前の版で NFD のまま保存した出所を NFC にそろえる (同じ出所が NFC で既にあれば、古いほうを消す)."""
@@ -170,12 +261,35 @@ class Store:
                 self.conn.rollback()
                 raise
 
+    @property
+    def conn(self) -> sqlite3.Connection:
+        """この処理 (スレッド) 用の接続. 無ければ開く."""
+        c = getattr(self._local, "conn", None)
+        if c is None:
+            if self._closed:
+                raise RuntimeError("保存先は閉じています")
+            c = sqlite3.connect(self.path, timeout=10)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA foreign_keys = ON")
+            c.execute("PRAGMA busy_timeout = 10000")   # アプリと Claude (MCP) が同時に使っても待って続ける
+            self._local.conn = c
+            with self._lock:
+                self._conns.append(c)
+        return c
+
     def close(self) -> None:
-        self.conn.close()
+        self._closed = True
+        with self._lock:
+            for c in self._conns:
+                try:
+                    c.close()
+                except sqlite3.ProgrammingError:   # 別の処理で開いた接続は、その処理が終わると閉じられる
+                    pass
+            self._conns.clear()
 
     # ---------------- 資料 ----------------
     def find_document_by_source(self, source: str) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM documents WHERE source = ?", (nfc(source),)).fetchone()
+        return self.conn.execute("SELECT * FROM documents WHERE source = ?", (self._src_in(source),)).fetchone()
 
     def add_document(self, title: str, source: str, kind: str, sha256: str, meta: dict[str, Any],
                      paragraphs: list[tuple[str, str]]) -> int:
@@ -183,7 +297,7 @@ class Store:
 
         同じ出所の資料があれば置き換える。そのとき、本文が変わっていない段落に付いていた根拠と関係は新しい段落に付け直す。
         """
-        source = nfc(source)
+        source = self._src_in(source)
         with self.tx() as c:
             old = c.execute("SELECT id FROM documents WHERE source = ?", (source,)).fetchone()
             carry_ev: list[sqlite3.Row] = []
@@ -219,6 +333,7 @@ class Store:
             return None
         doc = dict(row)
         doc["meta"] = json.loads(doc["meta"] or "{}")
+        doc["source"] = self._src_out(doc["source"])
         return doc
 
     def list_documents(self, query: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
@@ -230,9 +345,12 @@ class Store:
         if query:
             sql += " WHERE d.title LIKE ? OR d.source LIKE ?"
             params += [f"%{query}%", f"%{query}%"]
-        sql += " ORDER BY d.id DESC LIMIT ?"
+        sql += " ORDER BY d.added_at DESC, d.id DESC LIMIT ?"
         params.append(-1 if limit is None else limit)
-        return [dict(r) for r in self.conn.execute(sql, params)]
+        out = [dict(r) for r in self.conn.execute(sql, params)]
+        for d in out:
+            d["source"] = self._src_out(d["source"])
+        return out
 
     def count_documents(self, query: str | None = None) -> int:
         if query:
@@ -246,6 +364,7 @@ class Store:
 
         counts: Counter = Counter()
         for (src,) in self.conn.execute("SELECT source FROM documents"):
+            src = self._src_out(src)
             if "://" in src or src.startswith("text:"):
                 counts[src.split("://")[0] + "://" if "://" in src else "貼り付けた文章"] += 1
                 continue
@@ -256,6 +375,11 @@ class Store:
     def delete_documents_under(self, prefix: str) -> list[int]:
         """出所がそのフォルダ (またはそのファイル) の資料をまとめて消し、消した資料 ID を返す."""
         prefix = nfc(prefix).rstrip("/") or "/"
+        if self.root and (Path(prefix) == self.root):
+            ids = [int(r[0]) for r in self.conn.execute("SELECT id FROM documents")]
+            self.delete_documents(ids)
+            return ids
+        prefix = self._src_in(prefix)
         like = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "/%"
         ids = [int(r[0]) for r in self.conn.execute(
             "SELECT id FROM documents WHERE source = ? OR source LIKE ? ESCAPE '\\'", (prefix, like))]
@@ -264,6 +388,16 @@ class Store:
                 chunk = ids[i:i + 500]
                 c.execute(f"DELETE FROM documents WHERE id IN ({','.join('?' * len(chunk))})", chunk)
         return ids
+
+    def delete_documents_under_preview(self, prefix: str) -> list[int]:
+        """出所がそのフォルダの資料の ID (消さずに返す)."""
+        prefix = nfc(prefix).rstrip("/") or "/"
+        out = []
+        for i, src in self.conn.execute("SELECT id, source FROM documents"):
+            full = self._src_out(src)
+            if full == prefix or full.startswith(prefix + "/"):
+                out.append(int(i))
+        return out
 
     def paragraphs_of(self, document_id: int, offset: int = 0, limit: int | None = None) -> list[dict[str, Any]]:
         """資料の段落を順に返す. offset は先頭からの段落数、limit は返す段落数 (None は最後まで)."""
@@ -323,7 +457,7 @@ class Store:
         for i, src in self.conn.execute("SELECT id, source FROM documents"):
             if src.startswith(("text:", "http://", "https://")):
                 continue
-            p = PurePath(src)
+            p = PurePath(self._src_out(src))
             if files_dir and (p == files_dir or files_dir in p.parents):
                 continue
             if any(p == r or r in p.parents for r in roots):

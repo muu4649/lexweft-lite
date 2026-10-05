@@ -155,6 +155,7 @@ def load_file(path: Path) -> Loaded | None:
 SKIP_DIRS = {
     "node_modules", "site-packages", "dist-packages", "__pycache__", "venv", "env", "build", "dist", "target", "vendor",
     "Library", "Applications", "Pictures", "Music", "Movies", "Public", "Trash",
+    "_LeXWeft",   # LeXWeft Lite がフォルダの中に作る意味層のフォルダ (資料ではない)
 }
 SKIP_FILE_PREFIXES = ("license", "licence", "copying", "notice", "changelog", "authors", "contributors")
 MAX_FILE_BYTES = 50 * 1024 * 1024

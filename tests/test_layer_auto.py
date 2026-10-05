@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+from conftest import make_folder, register_and_import
 from fastapi.testclient import TestClient
 
 from lexweft_lite import clusters as cl
 from lexweft_lite import runtime
-from lexweft_lite.ingest import ingest
 
 H = {"X-LexWeft": "1"}
 
@@ -24,57 +24,54 @@ ROBOT = ["ロボットハンドの把持力を触覚センサで調整する。�
          "ロボットハンドの指の数と把持の成功率の関係を調べた。"]
 
 
-def _folder(root, name, texts):
-    d = root / name
-    d.mkdir()
-    for i, t in enumerate(texts):
-        (d / f"{name}_{i}.md").write_text(f"# {name} {i}\n\n{t}\n", encoding="utf-8")
-    return d
-
-
 def test_layer_is_built_per_folder(home, tmp_path):
-    s = runtime.store()
-    a = _folder(tmp_path, "battery", BATTERY)
-    b = _folder(tmp_path, "robot", ROBOT)
-    for d in (a, b):
-        s.add_source(str(d))
-        ingest(s, str(d))
-    st = cl.build(s, str(a))
-    assert st["documents"] == 7 and st["clusters"] >= 1 and not st["stale"]
-    m = cl.map_data(s, str(a))
-    assert len(m["points"]) == 7
-    titles = {p["title"] for p in m["points"]}
-    assert all(t.startswith("battery") for t in titles)          # 指定したフォルダの資料だけ
+    a = register_and_import(make_folder(tmp_path, "battery", BATTERY))
+    b = register_and_import(make_folder(tmp_path, "robot", ROBOT))
+    m = cl.map_data(a)
+    assert len(m["points"]) == 7 and all(p["title"].startswith("battery") for p in m["points"])   # そのフォルダの資料だけ
     words = {t for c in m["clusters"] for t, _ in c["terms"]}
     assert "ロボット" not in words and "ロボットハンド" not in words
-    # すべての資料の範囲は別に作る
-    assert cl.status(s, cl.ALL)["built_at"] is None
-    cl.build(s, cl.ALL)
-    assert len(cl.map_data(s, cl.ALL)["points"]) == 14
-    # 似た資料は同じフォルダの中から
+    assert len(cl.map_data(b)["points"]) == 7
     doc = m["points"][0]["id"]
-    sims = cl.similar_documents(s, doc)
-    assert sims and all(x["title"].startswith("battery") for x in sims)
+    sims = cl.similar_documents(a, doc)
+    assert sims and all(x["title"].startswith("battery") for x in sims)   # 似た資料は同じフォルダの中から
     # 資料が増えると古くなる
-    (a / "extra.md").write_text("# 追加\n\n冷却板の流路を変えた。", encoding="utf-8")
-    ingest(s, str(a))
-    assert cl.status(s, str(a))["stale"]
+    (tmp_path / "battery" / "extra.md").write_text("# 追加\n\n冷却板の流路を変えた。", encoding="utf-8")
+    from lexweft_lite.ingest import ingest
+
+    ingest(a, str(tmp_path / "battery"), a.markdown_dir)
+    assert cl.status(a)["stale"]
+
+
+def test_cluster_ids_and_colors_stay_when_rebuilt(home, tmp_path):
+    st = register_and_import(make_folder(tmp_path, "mix", BATTERY + ROBOT))
+    before = {c["label"]: (c["id"], c["color"]) for c in cl.clusters(st)}
+    v1 = cl.status(st)["version"]
+    (tmp_path / "mix" / "extra.md").write_text("# 追加\n\nロボットハンドの触覚センサで把持力を測った。", encoding="utf-8")
+    from lexweft_lite.ingest import ingest
+
+    ingest(st, str(tmp_path / "mix"), st.markdown_dir)
+    cl.build(st)
+    after = cl.status(st)
+    assert after["version"] == v1 + 1 and after["changes"]["added_documents"] == 1
+    kept = {c["id"]: c["color"] for c in cl.clusters(st)}
+    # 前のまとまりの番号と色は、中身が重なっていれば引き継ぐ
+    assert after["changes"]["kept_clusters"] >= 1
+    assert any(i in kept and kept[i] == color for i, color in before.values())
 
 
 def test_scopes_api(home, tmp_path):
     from lexweft_lite.web import app
 
-    a = _folder(tmp_path, "battery", BATTERY)
+    st = register_and_import(make_folder(tmp_path, "battery", BATTERY))
     c = TestClient(app)
-    s = runtime.store()
-    s.add_source(str(a))
-    ingest(s, str(a))
-    cl.build(s, str(a))
     sc = c.get("/api/scopes").json()
-    assert [x["scope"] for x in sc] == [str(a), "*"] and sc[0]["clusters"] >= 1
-    m = c.get("/api/map", params={"scope": str(a)}).json()
+    assert [x["scope"] for x in sc] == [st.key] and sc[0]["clusters"] >= 1 and sc[0]["location"] == "folder"
+    m = c.get("/api/map", params={"scope": st.key}).json()
     assert len(m["points"]) == 7
-    d = c.get(f"/api/clusters/{m['clusters'][0]['id']}", params={"scope": str(a)}).json()
+    d = c.get(f"/api/clusters/{m['clusters'][0]['id']}", params={"scope": st.key}).json()
     assert d["terms"] and d["documents"]
-    g = c.get("/api/keywords/graph", params={"scope": str(a), "limit": 20}).json()
+    g = c.get("/api/keywords/graph", params={"scope": st.key, "limit": 20}).json()
     assert g["documents"] == 7 and any(n.get("cluster") is not None for n in g["nodes"])
+    srcs = c.get("/api/sources").json()
+    assert srcs[0]["documents"] == 7 and srcs[0]["changed"] is False

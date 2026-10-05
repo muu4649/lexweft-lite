@@ -21,10 +21,10 @@ def test_api_flow(home, sample_file):
     doc = c.get(f"/api/documents/{doc_id}").json()
     pid = doc["paragraphs"][1]["id"]
     a = c.post("/api/concepts", json={"name": "セル間の熱伝播", "type": "課題", "paragraph_ids": [pid]}, headers=H).json()
-    b = c.post("/api/concepts", json={"name": "相変化材料シート", "type": "解決手段"}, headers=H).json()
+    b = c.post("/api/concepts", json={"name": "相変化材料シート", "type": "解決手段", "paragraph_ids": [doc["paragraphs"][2]["id"]]}, headers=H).json()
     assert c.post("/api/relations", json={"source": b["id"], "target": a["id"], "kind": "解決する", "paragraph_id": pid}, headers=H).json()["created"]
     g = c.get("/api/graph").json()
-    assert len(g["nodes"]) == 3 and len(g["edges"]) == 2
+    assert len(g["nodes"]) == 3 and len(g["edges"]) == 3
     s = c.get("/api/search", params={"q": ["熱暴走|相変化"]}).json()
     assert len(s["queries"]) == 2 and s["paragraphs"]
     assert "lexweft-lite" in c.get("/api/mcp-config").json()["mcpServers"]
@@ -75,7 +75,7 @@ def test_cli(home, sample_file, capsys):
     cfg = json.loads(out)
     assert cfg["mcpServers"]["lexweft-lite"]["args"] == ["mcp"]
     assert cli.main(["export", "--out", str(home / "ex")]) == 0
-    assert (home / "ex" / "layer.md").exists() and list((home / "ex" / "documents").glob("*.md"))
+    assert (home / "ex" / "layer.md").exists() and list((home / "ex" / "documents").glob("**/*.md"))
 
 
 def test_serve_port_fallback(home, monkeypatch):

@@ -37,7 +37,7 @@ _STOP_EN = {
 
 _FENCE_RE = re.compile(r"```.*?```", re.S)
 _TAG_RE = re.compile(r"<[^>]{1,200}>")
-_CODE_CHARS = set("{}[];=<>$\\|")
+_CODE_CHARS = set("{};=<>$\\|")   # 角かっこ ([1] や Markdown のリンク) は文章にもよく出るので、コードの印にしない
 _JA_CHAR_RE = re.compile(r"[ぁ-んァ-ヴ一-龥]")
 
 

@@ -33,16 +33,22 @@ function scopes() { return S.ov?.scopes || []; }
 function currentScope() {
   const all = scopes();
   if (S.scope && all.some(x => x.scope === S.scope)) return S.scope;
-  const folder = all.find(x => x.scope !== '*');
-  return folder ? folder.scope : '*';
+  const folder = all.find(x => x.scope !== 'central');
+  return folder ? folder.scope : (all[0]?.scope || 'central');
 }
 function setScope(scope) {
   S.scope = scope;
   try { localStorage.setItem('lw-scope', scope); } catch (e) { /* 保存できなくても動く */ }
 }
-function scopeSelect() {
-  const cur = currentScope();
-  return `<select id="scopesel" title="意味層の範囲">${scopes().map(x => `<option value="${esc(x.scope)}" ${x.scope === cur ? 'selected' : ''}>${esc(x.label)} (${num(x.documents_now)} 件)</option>`).join('')}</select>`;
+function scopeSelect(withAll = false, id = 'scopesel', cur = null) {
+  cur = cur ?? (withAll ? (S.scopeAll || '') : currentScope());
+  const all = withAll ? `<option value="" ${cur === '' ? 'selected' : ''}>すべてのフォルダ</option>` : '';
+  return `<select id="${id}" title="フォルダ">${all}${scopes().filter(x => x.exists !== false).map(x => `<option value="${esc(x.scope)}" ${x.scope === cur ? 'selected' : ''}>${esc(x.label)} (${num(x.documents_now || 0)} 件)</option>`).join('')}</select>`;
+}
+function whereBadge(x) {
+  if (x.scope === 'central') return '<span class="chip">アプリ側に保存</span>';
+  return x.location === 'folder' ? `<span class="chip" title="${esc(x.data_dir || '')}">意味層はフォルダの中（_LeXWeft）</span>`
+    : `<span class="chip" title="${esc(x.reason || '')}">意味層はアプリ側に保存</span>`;
 }
 function bindScope(reload) {
   const sel = $('#scopesel');
@@ -97,6 +103,9 @@ function jobHtml() {
       ${sc.files === 0 ? '<div class="small muted">取り込める形式 (md / txt / html / pdf / docx / csv) のファイルがありません</div>' : ''}
       ${many ? '<div class="small" style="color:var(--warn);margin-top:4px">多いです。テーマごとのフォルダに絞ると、見通しがよくなります</div>' : ''}
       <div class="small muted" style="margin-top:4px">隠しフォルダ・アプリや開発用のフォルダ・ライセンス文は読みません</div>
+      ${sc.is_dir && sc.files ? (sc.layer_location === 'folder'
+        ? `<div class="small" style="margin-top:6px">意味層のデータは、このフォルダの中に <b>_LeXWeft</b> というフォルダを作って保存します。フォルダごと移動・コピーすると、意味層も一緒に付いていきます。</div>`
+        : `<div class="small" style="margin-top:6px;color:var(--warn)">${esc(sc.layer_reason)}</div>`) : ''}
       <div class="row" style="margin-top:8px">${sc.files ? '<button class="btn primary" id="scango">取り込む</button>' : ''}<button class="btn" id="scanno">やめる</button></div></div>`;
   }
   if (!j) return '';
@@ -163,20 +172,29 @@ loaders.home = async () => {
 };
 
 
+function changesText(x) {
+  const c = x.changes || {};
+  const parts = [];
+  if (c.added_documents) parts.push(`資料 +${num(c.added_documents)}`);
+  if (c.removed_documents) parts.push(`資料 −${num(c.removed_documents)}`);
+  if ((c.new_clusters || []).length && x.version > 1) parts.push(`新しいまとまり ${c.new_clusters.length}`);
+  return x.version > 1 && parts.length ? `版 ${x.version}（前回から ${parts.join('・')}）` : (x.version ? `版 ${x.version}` : '');
+}
+
 function layerHtml() {
-  const rows = scopes().filter(x => x.scope !== '*' || x.built_at);
+  const rows = scopes().filter(x => x.exists !== false);
   if (!S.ov.stats.documents) return '<div class="muted small">資料を取り込むと、ここで自動で作ります。</div>';
-  if (!scopes().some(x => x.scope !== '*')) return '<div class="small muted">フォルダを登録すると、フォルダごとに作ります。</div>';
+  if (!rows.length) return '<div class="small muted">フォルダを登録すると、フォルダごとに作ります。</div>';
   return `<table>${rows.map(x => {
     let st;
     if (x.building) st = '<span class="small">作っています…</span>';
     else if (x.error) st = `<span class="small" style="color:var(--warn)">作れませんでした</span>`;
     else if (!x.built_at) st = '<span class="small muted">まだ</span>';
-    else st = `<span class="small">${num(x.clusters)} のまとまり</span>${x.stale ? ' <span class="small" style="color:var(--warn)">（資料が変わりました）</span>' : ''}`;
-    return `<tr><td><b>${esc(x.label)}</b><div class="small muted">${num(x.documents_now)} 件の資料</div></td><td>${st}</td>
+    else st = `<span class="small">${num(x.clusters)} のまとまり</span>${x.stale ? ' <span class="small" style="color:var(--warn)">（資料が変わりました）</span>' : ''}<div class="small muted">${esc(changesText(x))}</div>`;
+    return `<tr><td><b>${esc(x.label)}</b><div class="small muted">${num(x.documents_now)} 件の資料</div>${whereBadge(x)}</td><td>${st}</td>
       <td style="white-space:nowrap;text-align:right"><button class="btn" data-mapof="${esc(x.scope)}">地図</button> <button class="link small" data-rebuild="${esc(x.scope)}">作り直す</button></td></tr>`;
   }).join('')}</table>
-  <div class="small muted" style="margin-top:6px">意味層はフォルダごとに作ります。フォルダをまたいで見たいときは、地図の範囲で「すべての資料」を選びます。</div>`;
+  <div class="small muted" style="margin-top:6px">意味層はフォルダごとに作り、ふつうはそのフォルダの中の _LeXWeft に保存します。フォルダをまたいで探したいときは、「検索」で「すべてのフォルダ」を選びます。</div>`;
 }
 
 function bindLayer() {
@@ -200,7 +218,10 @@ function pollLayer() {
 
 function renderHome() {
   const src = (S.sources || []).map(f => `<tr><td><div style="word-break:break-all">${esc(f.path)}</div>
-      <div class="small muted">${num(f.documents)} 件 ・ ${f.last_run ? '最後に取り込み ' + esc(f.last_run.replace('T', ' ').slice(0, 16)) : 'まだ取り込んでいません'}${f.exists ? '' : ' ・ <span style="color:var(--warn)">フォルダが見つかりません</span>'}</div></td>
+      <div class="small muted">${num(f.documents)} 件 ・ ${f.last_run ? '最後に取り込み ' + esc(f.last_run.replace('T', ' ').slice(0, 16)) : 'まだ取り込んでいません'}${f.exists ? '' : ' ・ <span style="color:var(--warn)">フォルダが見つかりません</span>'}</div>
+      ${whereBadge({scope: f.path, location: f.location, reason: f.reason, data_dir: f.data_dir})}
+      ${f.changed ? '<span class="chip" style="color:var(--warn)">新しいファイル・変わったファイルがあります</span>' : ''}
+      <label class="small"><input type="checkbox" data-auto="${esc(f.path)}" ${f.auto ? 'checked' : ''}> 変わったら自動で取り込む</label></td>
       <td style="white-space:nowrap;text-align:right"><button class="btn" data-run="${esc(f.path)}">取り込み直す</button> <button class="link small" data-unreg="${esc(f.path)}">外す</button></td></tr>`).join('');
   $('#main').innerHTML = `<div class="steps3">
     <div class="panel step"><div class="stepno">1</div><h2>フォルダを登録する</h2>
@@ -234,10 +255,11 @@ function bindHome() {
   $$('[data-unreg]').forEach(b => b.onclick = () => guard(async () => {
     const path = b.dataset.unreg;
     if (!confirm(`「${path}」の登録を外します。`)) return;
-    const del = confirm('このフォルダから取り込んだ資料も LeXWeft Lite から消しますか？（元のファイルは消えません）\nOK: 消す ／ やめる: 残す');
-    const r = await post('/api/sources/remove', {path, delete_documents: del});
-    toast(del ? `登録を外し、${num(r.deleted)} 件を消しました` : '登録を外しました'); load();
+    const del = confirm('このフォルダの意味層のデータ（_LeXWeft：まとまり・地図・Claude が書いた課題と解決手段）も消しますか？\n元の資料は消えません。\nOK: 消す ／ やめる: 残す（あとで登録し直すと、そのまま使えます）');
+    const r = await post('/api/sources/remove', {path, delete_data: del});
+    toast(del && r.deleted ? '登録を外し、意味層のデータを消しました' : '登録を外しました（意味層のデータは残しています）'); load();
   }));
+  $$('[data-auto]').forEach(c => c.onchange = () => guard(async () => { await post('/api/sources/auto', {path: c.dataset.auto, auto: c.checked}); toast(c.checked ? '変わったら自動で取り込みます' : '自動の取り込みを止めました'); }));
   $('#pick').onclick = () => file.click();
   file.onchange = () => upload(file.files);
   drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
@@ -272,7 +294,7 @@ function similarHtml() {
 // ---------------- 資料 ----------------
 function renderDocs() {
   const rows = S.docs.map(d => `<tr class="click ${S.doc?.id === d.id ? 'sel' : ''}" data-doc="${d.id}">
-      <td>${esc(d.title)}<div class="small muted">${esc(d.kind)} ・ ${num(d.paragraphs)} 段落</div></td>
+      <td>${esc(d.title)}<div class="small muted">${esc(d.folder || '')} ・ ${esc(d.kind)} ・ ${num(d.paragraphs)} 段落</div></td>
       <td class="small">${d.concepts ? num(d.concepts) + ' 概念' : '<span class="muted">未記述</span>'}</td></tr>`).join('');
   const folders = S.showFolders ? `<div style="margin-top:8px">
       <div class="row small"><span class="muted">まとめる階層</span><button class="btn" id="fdless">−</button><span>${S.folderDepth || 4}</span><button class="btn" id="fdmore">＋</button></div>
@@ -380,7 +402,7 @@ async function upload(files) {
 
 // ---------------- 意味層 ----------------
 loaders.layer = async () => {
-  S.concepts = await api('/api/concepts?' + new URLSearchParams(S.layerQ ? {q: S.layerQ} : {}));
+  S.concepts = await api('/api/concepts?' + new URLSearchParams({...(S.layerQ ? {q: S.layerQ} : {}), ...(S.scopeAll ? {scope: S.scopeAll} : {})}));
   if (S.concept) S.concept = await api(`/api/concepts/${S.concept.id}`).catch(() => null);
   renderLayer();
 };
@@ -394,16 +416,17 @@ function renderLayer() {
     const items = S.concepts.filter(c => c.type === t.name);
     return `<div class="panel typecol"><h3><span class="dot" style="background:${esc(t.color)}"></span>${esc(t.name)} <span class="muted small">${num(items.length)}</span></h3>
       ${t.description ? `<div class="small muted">${esc(t.description)}</div>` : ''}
-      <ul class="clist">${items.map(c => `<li data-c="${c.id}" class="${S.concept?.id === c.id ? 'sel' : ''}"><span>${esc(c.name)}</span><span class="small muted">${num(c.documents)} 資料</span></li>`).join('') || '<li class="muted small">なし</li>'}</ul></div>`;
+      <ul class="clist">${items.map(c => `<li data-c="${c.id}" class="${S.concept?.id === c.id ? 'sel' : ''}"><span>${esc(c.name)}${S.scopeAll ? '' : ` <span class="small muted">${esc(c.folder)}</span>`}</span><span class="small muted">${num(c.documents)} 資料</span></li>`).join('') || '<li class="muted small">なし</li>'}</ul></div>`;
   }).join('');
-  $('#main').innerHTML = `<div class="row" style="margin-bottom:12px"><input type="text" id="lq" placeholder="名前・別名・説明で絞る" value="${esc(S.layerQ)}" style="flex:1;max-width:320px">
-      <a class="btn" style="margin-left:auto;text-decoration:none" href="/api/export/layer.md" download="layer.md">意味層を Markdown で保存</a></div>
+  $('#main').innerHTML = `<div class="row" style="margin-bottom:12px">${scopeSelect(true, 'lscope')}<input type="text" id="lq" placeholder="名前・別名・説明で絞る" value="${esc(S.layerQ)}" style="flex:1;max-width:320px">
+      <a class="btn" style="margin-left:auto;text-decoration:none" href="/api/export/layer.md${S.scopeAll ? '?scope=' + encodeURIComponent(S.scopeAll) : ''}" download="layer.md">意味層を Markdown で保存</a></div>
     <div class="cols"><div><div class="typecols" style="grid-template-columns:1fr">${cols}</div>
       <details class="panel"><summary class="small">型を足す (例: 効果、材料、評価指標)</summary>
         <div class="row" style="margin-top:8px"><input type="text" id="tname" placeholder="型の名前" style="flex:1"><button class="btn" id="tadd">足す</button></div>
         <input type="text" id="tdesc" placeholder="説明 (任意)" style="margin-top:6px"></details></div>
       <div>${conceptHtml()}</div></div>`;
   $('#lq').onchange = e => { S.layerQ = e.target.value.trim(); loaders.layer(); };
+  $('#lscope').onchange = e => { S.scopeAll = e.target.value; S.concept = null; loaders.layer(); };
   $('#tadd').onclick = () => guard(async () => { await post('/api/types', {name: $('#tname').value, description: $('#tdesc').value}); toast('型を足しました'); load(); });
   $$('[data-c]').forEach(li => li.onclick = () => openConcept(+li.dataset.c));
   bindConcept();
@@ -412,12 +435,13 @@ function renderLayer() {
 function conceptHtml() {
   const c = S.concept;
   if (!c) return `<div class="panel empty">概念を選ぶと、別名・根拠の段落・関係が出ます。${S.ov.stats.concepts ? '' : '<br>まだ概念がありません。「LLM と接続」から Claude に書かせるか、資料の段落を選んで書けます。'}</div>`;
-  const others = S.concepts.filter(x => x.id !== c.id);
+  const others = S.concepts.filter(x => x.id !== c.id && x.scope === c.scope);   // 結べるのは同じフォルダの概念だけ
   const rel = c.relations.map(r => `<tr><td>${r.direction === 'out' ? `<b>${esc(c.name)}</b> ─${esc(r.kind)}→ <button class="link" data-c2="${r.dst_id}">${esc(r.dst)}</button>` : `<button class="link" data-c2="${r.src_id}">${esc(r.src)}</button> ─${esc(r.kind)}→ <b>${esc(c.name)}</b>`}
       ${r.paragraph_id ? `<span class="small muted">¶${r.paragraph_id}</span>` : ''}</td><td style="width:48px;white-space:nowrap"><button class="link" data-delrel="${r.id}">外す</button></td></tr>`).join('');
   const ev = c.evidence.map(e => `<div class="para linked"><span class="pid">¶${e.paragraph_id}</span><button class="link" data-opendoc="${e.document_id}">${esc(e.title)}</button>
       <button class="link small" style="float:right" data-delev="${e.paragraph_id}">外す</button><div>${esc(e.text)}</div></div>`).join('');
   return `<div class="panel">
+    <div class="small muted" style="margin-bottom:6px">フォルダ: ${esc(c.folder || '')}</div>
     <div class="row"><input type="text" id="ename" value="${esc(c.name)}" style="flex:1;font-weight:600"><select id="etype">${typeOptions(c.type)}</select></div>
     <textarea id="edesc" placeholder="説明" style="min-height:60px;margin-top:8px">${esc(c.description)}</textarea>
     <div class="row" style="margin-top:6px"><button class="btn primary" id="esave">保存</button><button class="btn danger" id="edel">概念を消す</button></div>
@@ -546,7 +570,7 @@ async function selectCluster(id) {
   await guard(async () => {
     const scope = currentScope();
     const c = await api(`/api/clusters/${id}?` + new URLSearchParams({scope}));
-    const where = scope === '*' ? 'すべての資料' : `フォルダ ${scope}`;
+    const where = scope === 'central' ? 'フォルダの外の資料' : `フォルダ「${(scopes().find(x => x.scope === scope) || {}).label || scope}」`;
     const prompt = `LeXWeft Lite の${where}のまとまり ${c.id}「${c.label}」の資料を読んで、課題と解決手段を根拠の段落つきで書いて。解決手段が課題を解く関係も結んで。`;
     side.innerHTML = `<div class="row" style="justify-content:space-between"><b><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)}</b><button class="link" id="gclose">×</button></div>
       <div class="small muted">${num(c.size)} 件の資料</div>
@@ -566,7 +590,7 @@ loaders.graph = async () => {
   if (S.gopts.mode === 'keywords') {
     S.graph = await api('/api/keywords/graph?' + new URLSearchParams({limit: S.gopts.limit || 80, scope: currentScope(), ...(S.gopts.q ? {q: S.gopts.q} : {})}));
   } else {
-    S.graph = await api('/api/graph?' + new URLSearchParams({documents: S.gopts.documents, ...(S.gopts.type ? {type: S.gopts.type} : {})}));
+    S.graph = await api('/api/graph?' + new URLSearchParams({documents: S.gopts.documents, ...(S.gopts.type ? {type: S.gopts.type} : {}), ...(S.scopeAll ? {scope: S.scopeAll} : {})}));
   }
   renderGraph();
 };
@@ -577,7 +601,7 @@ function renderGraph() {
   const controls = kw
     ? `${scopeSelect()}<input type="text" id="gq" placeholder="テーマで絞る (例: 熱暴走 | 冷却)" value="${esc(S.gopts.q || '')}" style="width:240px">
        <select id="glimit">${[40, 80, 120].map(n => `<option ${+(S.gopts.limit || 80) === n ? 'selected' : ''}>${n}</option>`).join('')}</select><span class="small muted">語</span>`
-    : `<label><input type="checkbox" id="gdocs" ${S.gopts.documents ? 'checked' : ''}> 資料も出す</label>
+    : `${scopeSelect(true, 'gscope')}<label><input type="checkbox" id="gdocs" ${S.gopts.documents ? 'checked' : ''}> 資料も出す</label>
        <select id="gtype"><option value="">すべての型</option>${typeOptions(S.gopts.type)}</select>`;
   let empty;
   if (kw) {
@@ -603,6 +627,7 @@ function renderGraph() {
     bindScope(() => loaders.graph());
   } else {
     $('#gdocs').onchange = e => { S.gopts.documents = e.target.checked; loaders.graph(); };
+    $('#gscope').onchange = e => { S.scopeAll = e.target.value; loaders.graph(); };
     $('#gtype').onchange = e => { S.gopts.type = e.target.value; loaders.graph(); };
   }
   if (g.nodes.length) drawGraph(g);
@@ -754,22 +779,22 @@ function highlight(text, queries) {
 }
 
 function routeHtml(R) {
-  const res = R.route.results.filter(x => x.documents.length);
-  if (!res.length) return '<div class="panel empty">関係する資料が見つかりませんでした。言い換えを | で並べて足してみてください。意味層ができていないフォルダは「取り込み」で作れます。</div>';
+  const docs = R.route.documents || [];
+  if (!docs.length) return '<div class="panel empty">関係する資料が見つかりませんでした。言い換えを | で並べて足してみてください。意味層ができていないフォルダは「取り込み」で作れます。</div>';
   const badge = w => `<span class="chip ${w.startsWith('意味') ? 'why-sem' : 'why-txt'}">${esc(w)}</span>`;
-  const blocks = res.map(x => `
-    <div class="panel"><h3 style="margin-top:0">関係するまとまり</h3>
-      ${x.clusters.map(c => `<span class="chip"><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)} <span class="muted">${Math.round(c.share * 100)}%</span></span>`).join('')}</div>
-    ${x.documents.map(d => `<div class="panel"><div class="row" style="justify-content:space-between">
-        <button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button>
+  const folderTag = d => R.route.across_folders ? `<span class="chip">${esc(d.folder)}</span>` : '';
+  const clusters = (R.route.folders || []).filter(f => f.clusters.length).map(f => `
+      <div class="small" style="margin-top:4px">${R.route.folders.length > 1 ? `<b>${esc(f.label)}</b>: ` : ''}${f.clusters.map(c => `<span class="chip"><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)} <span class="muted">${Math.round(c.share * 100)}%</span></span>`).join('')}</div>`).join('');
+  const cards = docs.map(d => `<div class="panel"><div class="row" style="justify-content:space-between">
+        <span><button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button> ${folderTag(d)}</span>
         <span class="small muted"><span class="dot" style="background:${esc(d.cluster_color)}"></span> ${esc(d.cluster_label)}</span></div>
-      ${d.paragraphs.map(p => `<div class="para"><span class="pid">¶${p.paragraph_id}</span>${esc(p.text)}<div class="tags">${p.why.map(badge).join('')}</div></div>`).join('')}</div>`).join('')}`).join('');
-  const un = R.unread.results.flatMap(x => x.unread);
+      ${d.paragraphs.map(p => `<div class="para"><span class="pid">¶${p.paragraph_id}</span>${esc(p.text)}<div class="tags">${p.why.map(badge).join('')}</div></div>`).join('')}</div>`).join('');
+  const un = R.unread.unread || [];
   const unread = un.length ? `<div class="panel" style="border-color:var(--accent)"><h3 style="margin-top:0">あわせて確かめたい資料 <span class="small muted">（関係が強いのに、上の一覧には出ていない資料）</span></h3>
-      ${un.map(d => `<div class="para"><button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button>
+      ${un.map(d => `<div class="para"><button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button> ${R.route.across_folders ? `<span class="chip">${esc(d.folder)}</span>` : ''}
         <span class="small muted"> ・ <span class="dot" style="background:${esc(d.cluster_color)}"></span> ${esc(d.cluster_label)}</span>
         <div class="small">${esc(d.check_paragraph.text)}</div><div class="tags">${d.why.map(badge).join('')}</div></div>`).join('')}</div>` : '';
-  return blocks + unread;
+  return `<div class="panel"><h3 style="margin-top:0">関係するまとまり</h3>${clusters}</div>` + cards + unread;
 }
 
 function renderSearch() {
@@ -780,7 +805,7 @@ function renderSearch() {
   if (mode === 'text' && r) {
     const concepts = r.concepts?.length ? `<div class="panel"><h3 style="margin-top:0">概念</h3>${r.concepts.map(c => `<button class="link chip" data-c="${c.id}" style="border-color:${esc(typeColor(c.type))}">${esc(c.name)} <span class="muted">${esc(c.type)}</span></button>`).join('')}</div>` : '';
     body = concepts + (r.paragraphs.length ? r.paragraphs.map(p => `<div class="panel"><div class="row" style="justify-content:space-between">
-        <button class="link" data-opendoc="${p.document_id}"><b>${esc(p.title)}</b></button><span class="small muted">${p.heading ? esc(p.heading) + ' ・ ' : ''}¶${p.paragraph_id} ・ 一致: ${p.matched.map(esc).join(' / ')}</span></div>
+        <span><button class="link" data-opendoc="${p.document_id}"><b>${esc(p.title)}</b></button> <span class="chip">${esc(p.folder || '')}</span></span><span class="small muted">${p.heading ? esc(p.heading) + ' ・ ' : ''}¶${p.paragraph_id} ・ 一致: ${p.matched.map(esc).join(' / ')}</span></div>
         <div class="para">${highlight(p.text, r.queries)}</div>${p.concepts.map(c => `<button class="link chip" data-c="${c.id}">${esc(c.name)}</button>`).join('')}</div>`).join('')
       : '<div class="panel empty">見つかりませんでした。言い換えや別の表記を | で区切って足してみてください。</div>');
   }
@@ -788,17 +813,20 @@ function renderSearch() {
     ? '質問を文で書けます。意味層をたどって、言い方が違っても関係する資料を探し、まだ見ていない関連資料も示します。'
     : '空白で区切った語はすべて含む段落を探します。| で区切ると言い換えとして別々に探し、順位をまとめます。';
   $('#main').innerHTML = `<div class="panel">
-      <div class="row" style="margin-bottom:8px"><button class="btn ${mode === 'route' ? 'primary' : ''}" id="m-route">意味層でたどる</button><button class="btn ${mode === 'text' ? 'primary' : ''}" id="m-text">文字で探す</button></div>
+      <div class="row" style="margin-bottom:8px"><button class="btn ${mode === 'route' ? 'primary' : ''}" id="m-route">意味層でたどる</button><button class="btn ${mode === 'text' ? 'primary' : ''}" id="m-text">文字で探す</button>
+        <span style="margin-left:auto">${scopeSelect(true, 'searchscope')}</span></div>
       <div class="row"><input type="text" id="q" value="${esc(S.searchQ)}" placeholder="${mode === 'route' ? '例: 電池の熱暴走を防ぐ方法' : '例: 熱暴走 | 熱連鎖 | thermal runaway'}" style="flex:1"><button class="btn primary" id="go">探す</button></div>
       <div class="small muted" style="margin-top:6px">${hint}</div></div>${body}`;
   const go = () => guard(async () => {
     S.searchQ = $('#q').value.trim(); if (!S.searchQ) return;
-    if (mode === 'route') S.route = await api('/api/route?' + new URLSearchParams({q: S.searchQ}));
-    else S.search = await api('/api/search?' + new URLSearchParams({q: S.searchQ}));
+    const sc = S.scopeAll ? {scope: S.scopeAll} : {};
+    if (mode === 'route') S.route = await api('/api/route?' + new URLSearchParams({q: S.searchQ, ...sc}));
+    else S.search = await api('/api/search?' + new URLSearchParams({q: S.searchQ, ...sc}));
     renderSearch();
   });
   $('#go').onclick = go;
   $('#q').onkeydown = e => { if (e.key === 'Enter' && !e.isComposing) go(); };
+  $('#searchscope').onchange = e => { S.scopeAll = e.target.value; };
   $('#m-route').onclick = () => { S.searchMode = 'route'; renderSearch(); };
   $('#m-text').onclick = () => { S.searchMode = 'text'; renderSearch(); };
   $$('[data-c]').forEach(b => b.onclick = () => openConcept(+b.dataset.c));

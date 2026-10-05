@@ -85,3 +85,14 @@ def _concepts_of(store: Store, paragraph_ids: list[int]) -> dict[int, list[dict[
                                 paragraph_ids):
         out.setdefault(int(r["paragraph_id"]), []).append({"id": r["id"], "name": r["name"], "type": r["type"]})
     return out
+
+
+def search_all(lib, queries: list[str] | str, top_k: int = 10, scope: str | None = None) -> list[dict[str, Any]]:
+    """登録したフォルダとフォルダの外の資料をまとめて探す (どれも同じ数え方の点なので、点の順に並べる)."""
+    stores = [lib.for_scope(scope)] if scope else lib.stores()
+    hits = []
+    for st in stores:
+        for h in search(st, queries, top_k=top_k):
+            hits.append({**h, "scope": st.key, "folder": st.label})
+    hits.sort(key=lambda h: -h["score"])
+    return hits[:top_k]

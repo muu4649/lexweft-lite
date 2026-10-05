@@ -1,4 +1,8 @@
-"""画面 (ブラウザ) と、その裏の API. 127.0.0.1 だけで待ち受ける."""
+"""画面 (ブラウザ) と、その裏の API. 127.0.0.1 だけで待ち受ける.
+
+資料と意味層は、登録したフォルダごとの保存先に分かれている (library.py)。
+API の scope は、登録したフォルダのパス、または "central" (フォルダの外の資料)。
+"""
 
 from __future__ import annotations
 
@@ -14,37 +18,46 @@ from pydantic import BaseModel
 
 from . import __version__, config
 from . import clusters as cl
+from . import concepts as co
 from . import keywords as kw
 from . import layer as ly
 from . import runtime
 from .ingest import ingest, ingest_text
+from .library import CENTRAL, LAYER_DIR
 from .loaders import SUPPORTED_SUFFIXES
-from .markdown import document_markdown, layer_markdown, remove_document_file
-from .search import search as _search
-from .store import nfc
+from .markdown import document_markdown, remove_document_file
+from .search import search_all
 
 WEB_DIR = Path(__file__).parent / "web"
 ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "testserver"}
 
 
-def _backfill_keywords() -> None:
-    """前の版で取り込んだ資料の語を、裏で数えておく (キーワードのつながり用)."""
+def _lib():
+    return runtime.library()
+
+
+def _startup() -> None:
+    """前の版で取り込んだ資料の語を数え、古くなった意味層を作り直し、フォルダの見張りを始める."""
     import threading
 
     def run() -> None:
         try:
-            while kw.backfill(runtime.store(), limit=50):
-                pass
-            cl.refresh_registered(runtime.store())   # 資料が変わったフォルダの、まとまりと地図を作り直す
+            for st in _lib().stores():
+                while kw.backfill(st, limit=50):
+                    pass
+                cl.build_in_background(st)
         except Exception:  # noqa: BLE001  画面の起動は止めない
             pass
 
     threading.Thread(target=run, daemon=True).start()
+    from . import jobs
+
+    jobs.watch()
 
 
 @asynccontextmanager
 async def _lifespan(_: FastAPI):  # type: ignore[no-untyped-def]
-    _backfill_keywords()
+    _startup()
     yield
 
 
@@ -79,12 +92,38 @@ async def _value_error(_: Request, exc: ValueError) -> JSONResponse:
 
 
 # ---------------- 全体 ----------------
+def _stats() -> dict[str, int]:
+    total: dict[str, int] = {}
+    for st in _lib().stores():
+        for k, v in st.stats().items():
+            total[k] = total.get(k, 0) + v
+    return total
+
+
+def _scopes() -> list[dict[str, Any]]:
+    """意味層の範囲 (登録したフォルダと、フォルダの外の資料) と、それぞれの状態."""
+    lib = _lib()
+    out = []
+    for row in lib.sources():
+        exists = Path(row["path"]).exists()
+        item = {"scope": row["path"], "label": "/".join(Path(row["path"]).parts[-2:]), "location": row["location"], "reason": row["reason"],
+                "exists": exists, "auto": bool(row["auto"])}
+        if exists or row["location"] == "central":
+            st = lib.store_for_folder(row["path"])
+            item.update({k: v for k, v in cl.status(st).items() if k not in ("scope", "label")})
+            item["data_dir"] = str(Path(st.path).parent)
+        out.append(item)
+    if lib.catalog.count_documents():
+        out.append({"scope": CENTRAL, "label": "フォルダの外の資料", "location": "central", "reason": "", "exists": True, "auto": False,
+                    **{k: v for k, v in cl.status(lib.catalog).items() if k not in ("scope", "label")}, "data_dir": str(config.home())})
+    return out
+
+
 @app.get("/api/overview")
 def overview() -> dict[str, Any]:
-    s = runtime.store()
-    return {"version": __version__, "home": str(config.home()), "distribution": config.distribution(), "stats": s.stats(), "scopes": cl.scopes(s),
-            "sources": len(s.list_sources()), "types": ly.list_types(s),
-            "relation_kinds": list(ly.RELATION_KINDS), "documents_without_concepts": ly.documents_without_concepts(s, limit=10)}
+    return {"version": __version__, "home": str(config.home()), "distribution": config.distribution(), "stats": _stats(),
+            "scopes": _scopes(), "sources": len(_lib().sources()), "layer_dir": LAYER_DIR, "types": co.list_types(_lib()),
+            "relation_kinds": list(ly.RELATION_KINDS), "documents_without_concepts": co.documents_without_concepts(_lib(), limit=10)}
 
 
 @app.get("/api/mcp-config")
@@ -108,47 +147,71 @@ class PrefixIn(BaseModel):
     prefix: str
 
 
+def _with_scope(d: dict[str, Any], st) -> dict[str, Any]:
+    d["scope"], d["folder"] = st.key, st.label
+    return d
+
+
 @app.get("/api/documents")
-def documents(q: str | None = None, limit: int = 300) -> dict[str, Any]:
-    s = runtime.store()
-    return {"total": s.count_documents(q), "documents": s.list_documents(q, limit)}
+def documents(q: str | None = None, limit: int = 300, scope: str | None = None) -> dict[str, Any]:
+    lib = _lib()
+    stores = [lib.for_scope(scope)] if scope else lib.stores()
+    docs, total = [], 0
+    for st in stores:
+        total += st.count_documents(q)
+        docs += [_with_scope(d, st) for d in st.list_documents(q, limit)]
+    docs.sort(key=lambda d: (d["added_at"], d["id"]), reverse=True)
+    return {"total": total, "documents": docs[:limit]}
 
 
 @app.get("/api/documents/folders")
 def document_folders(depth: int = 4) -> list[dict[str, Any]]:
-    return runtime.store().folders(depth=max(1, min(depth, 12)))
+    from collections import Counter
+
+    counts: Counter = Counter()
+    for st in _lib().stores():
+        for f in st.folders(depth=max(1, min(depth, 12)), limit=1000):
+            counts[f["folder"]] += f["documents"]
+    return [{"folder": f, "documents": n} for f, n in counts.most_common(40)]
 
 
 @app.post("/api/documents/delete-under")
 def delete_under(body: PrefixIn) -> dict[str, Any]:
     if not body.prefix.strip() or body.prefix.strip() in ("/", "~"):
         raise ValueError("消す範囲が広すぎます。フォルダを指定してください")
-    ids = runtime.store().delete_documents_under(body.prefix.strip())
-    for i in ids:
-        remove_document_file(i, runtime.markdown_dir())
-    if len(ids) >= 200:
-        runtime.store().compact()
-    return {"deleted": len(ids)}
+    deleted = 0
+    for st in _lib().stores():
+        ids = st.delete_documents_under(body.prefix.strip())
+        for i in ids:
+            if st.markdown_dir:
+                remove_document_file(i, st.markdown_dir)
+        if len(ids) >= 200:
+            st.compact()
+        if ids:
+            cl.build_in_background(st)
+        deleted += len(ids)
+    return {"deleted": deleted}
 
 
 @app.get("/api/documents/outside")
 def outside() -> dict[str, Any]:
-    return {"documents": len(runtime.store().documents_outside_sources())}
+    return {"documents": len(_lib().catalog.documents_outside_sources())}
 
 
 @app.post("/api/documents/delete-outside")
 def delete_outside() -> dict[str, Any]:
     """登録したフォルダの外の資料をまとめて消す (元のファイルは消さない)."""
-    s = runtime.store()
-    if not s.list_sources():
+    lib = _lib()
+    if not lib.sources():
         raise ValueError("フォルダを 1 つ以上登録してから使ってください")
+    s = lib.catalog
     ids = s.documents_outside_sources()
     s.delete_documents(ids)
     for i in ids:
         remove_document_file(i, runtime.markdown_dir())
     if len(ids) >= 200:
         s.compact()
-    cl.refresh_registered(s)
+    cl.build_in_background(s)
     return {"deleted": len(ids)}
 
 
@@ -157,9 +220,18 @@ def scan(path: str) -> dict[str, Any]:
     from .loaders import scan as _scan
 
     try:
-        return _scan(path.strip())
+        r = _scan(path.strip())
     except FileNotFoundError as e:
         raise HTTPException(404, f"見つかりません: {e}") from e
+    # 登録したときの保存先 (フォルダの中か、アプリ側か) を前もって知らせる
+    from .library import cloud_reason, real
+
+    p = real(path.strip())
+    r["layer_location"] = "central" if cloud_reason(p) else "folder"
+    r["layer_reason"] = cloud_reason(p)
+    r["layer_dir"] = str(Path(p) / LAYER_DIR)
+    r["registered"] = bool(_lib().source(p))
+    return r
 
 
 @app.post("/api/pick-folder")
@@ -188,92 +260,97 @@ def pick_folder() -> dict[str, Any]:
 class SourceIn(BaseModel):
     path: str | None = None
     delete_documents: bool = False
+    delete_data: bool = False
+    auto: bool | None = None
 
 
 @app.get("/api/sources")
 def sources() -> list[dict[str, Any]]:
-    return runtime.store().list_sources()
+    from .jobs import scan_signature
+
+    lib = _lib()
+    out = []
+    for row in lib.sources():
+        exists = Path(row["path"]).is_dir()
+        d = {**row, "exists": exists, "documents": 0, "changed": False}
+        if exists or row["location"] == "central":
+            st = lib.store_for_folder(row["path"])
+            d["documents"] = st.count_documents()
+            d["data_dir"] = str(Path(st.path).parent)
+        if exists:
+            d["changed"] = scan_signature(row["path"]) != (row["scan_sig"] or "")
+        out.append(d)
+    return out
 
 
 @app.post("/api/sources")
 def add_source(body: SourceIn) -> dict[str, Any]:
-    """フォルダを登録して取り込む."""
+    """フォルダを登録して取り込む (意味層の保存先も作る)."""
     from . import jobs
 
-    path = nfc(str(Path((body.path or "").strip()).expanduser()))
-    if not body.path or not Path(path).is_dir():
-        raise ValueError("フォルダが見つかりません")
-    if Path(path) in (Path.home(), Path("/"), Path(path).anchor and Path(Path(path).anchor)):
-        raise ValueError("ホームフォルダや PC 全体は登録できません。資料の入ったフォルダを選んでください")
-    real = runtime.store().add_source(path)
-    return jobs.start(real).view()
+    row = _lib().register((body.path or "").strip())
+    return {**jobs.start(row["path"]).view(), "source": row}
 
 
 @app.post("/api/sources/run")
 def run_sources(body: SourceIn) -> dict[str, Any]:
-    """登録したフォルダをもう一度読み、新しいファイル・変わったファイルを取り込む (path が無ければ全部)."""
+    """登録したフォルダをもう一度読み、新しいファイル・変わったファイル・消えたファイルを反映する (path が無ければ全部)."""
     from . import jobs
 
-    paths = [body.path] if body.path else [s["path"] for s in runtime.store().list_sources() if s["exists"]]
+    paths = [body.path] if body.path else [s["path"] for s in _lib().sources() if Path(s["path"]).is_dir()]
     return jobs.start(paths).view()
 
 
 @app.post("/api/sources/remove")
 def remove_source(body: SourceIn) -> dict[str, Any]:
-    s = runtime.store()
-    ok = s.remove_source((body.path or "").rstrip("/"))
-    deleted = 0
-    if ok and body.delete_documents:
-        ids = s.delete_documents_under(body.path or "")
-        for i in ids:
-            remove_document_file(i, runtime.markdown_dir())
-        deleted = len(ids)
-        if deleted >= 200:
-            s.compact()
-    s.conn.execute("DELETE FROM lscopes WHERE scope = ?", ((body.path or "").rstrip("/"),))
-    s.conn.commit()
-    cl.refresh_registered(s)
-    return {"removed": ok, "deleted": deleted}
+    return _lib().unregister((body.path or "").strip(), delete_data=body.delete_data or body.delete_documents)
 
 
+@app.post("/api/sources/auto")
+def source_auto(body: SourceIn) -> dict[str, Any]:
+    _lib().set_auto((body.path or "").strip(), bool(body.auto))
+    return {"auto": bool(body.auto)}
+
+
+# ---------------- 意味層 (自動) ----------------
 class ScopeIn(BaseModel):
-    scope: str = cl.ALL
+    scope: str = CENTRAL
 
 
 @app.get("/api/scopes")
 def scopes() -> list[dict[str, Any]]:
-    """意味層を作る範囲 (登録したフォルダと、すべての資料) と、それぞれの状態."""
-    return cl.scopes(runtime.store())
+    return _scopes()
 
 
 @app.get("/api/layer")
-def layer_status(scope: str = cl.ALL) -> dict[str, Any]:
-    return cl.status(runtime.store(), scope)
+def layer_status(scope: str = CENTRAL) -> dict[str, Any]:
+    return cl.status(_lib().for_scope(scope))
 
 
 @app.post("/api/layer/rebuild")
 def layer_rebuild(body: ScopeIn) -> dict[str, Any]:
-    started = cl.build_in_background(runtime.store(), body.scope, force=True)
-    return {"started": started, **cl.status(runtime.store(), body.scope)}
+    st = _lib().for_scope(body.scope)
+    started = cl.build_in_background(st, force=True)
+    return {"started": started, **cl.status(st)}
 
 
 @app.get("/api/map")
-def map_data(scope: str = cl.ALL) -> dict[str, Any]:
-    s = runtime.store()
-    st = cl.status(s, scope)
-    if (st["stale"] or not st["built_at"]) and st["documents_now"]:
-        cl.build_in_background(s, scope)   # まだ無い・古い範囲は、開いたときに作る
-    return cl.map_data(s, scope)
+def map_data(scope: str = CENTRAL) -> dict[str, Any]:
+    st = _lib().for_scope(scope)
+    s = cl.status(st)
+    if (s["stale"] or not s["built_at"]) and s["documents_now"]:
+        cl.build_in_background(st)   # まだ無い・古い意味層は、開いたときに作る
+    return cl.map_data(st)
 
 
 @app.get("/api/clusters/{cluster_id}")
-def cluster(cluster_id: int, scope: str = cl.ALL) -> dict[str, Any]:
-    return cl.cluster_detail(runtime.store(), cluster_id, scope)
+def cluster(cluster_id: int, scope: str = CENTRAL) -> dict[str, Any]:
+    return cl.cluster_detail(_lib().for_scope(scope), cluster_id)
 
 
 @app.get("/api/documents/{document_id}/similar")
-def similar(document_id: int, scope: str | None = None) -> list[dict[str, Any]]:
-    return cl.similar_documents(runtime.store(), document_id, scope)
+def similar(document_id: int) -> list[dict[str, Any]]:
+    return cl.similar_documents(_lib().for_id(document_id), document_id)
 
 
 @app.post("/api/jobs")
@@ -300,8 +377,10 @@ def cancel_job(job_id: str) -> dict[str, Any]:
 
 @app.post("/api/documents/path")
 def add_path(body: PathIn) -> list[dict[str, Any]]:
+    path = body.path.strip()
     try:
-        return [r.__dict__ for r in ingest(runtime.store(), body.path.strip(), runtime.markdown_dir())]
+        st = _lib().catalog if path.startswith(("http://", "https://")) else _lib().for_source(path)
+        return [r.__dict__ for r in ingest(st, path, st.markdown_dir)]
     except FileNotFoundError as e:
         raise HTTPException(404, f"見つかりません: {e}") from e
 
@@ -330,36 +409,39 @@ async def upload(files: list[UploadFile] = File(...)) -> list[dict[str, Any]]:
 
 @app.get("/api/documents/{document_id}")
 def document(document_id: int) -> dict[str, Any]:
-    s = runtime.store()
-    doc = s.get_document(document_id)
+    st = _lib().for_id(document_id)
+    doc = st.get_document(document_id)
     if doc is None:
         raise HTTPException(404, "資料がありません")
-    return {**doc, "paragraphs": s.paragraphs_of(document_id), "concepts": ly.concepts_in_document(s, document_id)}
+    return _with_scope({**doc, "paragraphs": st.paragraphs_of(document_id), "concepts": ly.concepts_in_document(st, document_id)}, st)
 
 
 @app.get("/api/documents/{document_id}/markdown", response_class=PlainTextResponse)
 def document_md(document_id: int) -> str:
-    return document_markdown(runtime.store(), document_id)
+    return document_markdown(_lib().for_id(document_id), document_id)
 
 
 @app.delete("/api/documents/{document_id}")
 def delete_document(document_id: int) -> dict[str, Any]:
-    ok = runtime.store().delete_document(document_id)
-    remove_document_file(document_id, runtime.markdown_dir())
+    st = _lib().for_id(document_id)
+    ok = st.delete_document(document_id)
+    if st.markdown_dir:
+        remove_document_file(document_id, st.markdown_dir)
+    cl.build_in_background(st)
     return {"deleted": ok}
 
 
 # ---------------- 検索 ----------------
 @app.get("/api/search")
-def search(q: list[str] = Query(default=[]), top_k: int = 20) -> dict[str, Any]:
-    s = runtime.store()
+def search(q: list[str] = Query(default=[]), top_k: int = 20, scope: str | None = None) -> dict[str, Any]:
+    lib = _lib()
     queries = [x.strip() for part in q for x in part.split("|") if x.strip()]
-    concepts = []
+    concepts: list[dict[str, Any]] = []
     for x in queries:
-        for c in ly.list_concepts(s, query=x, limit=10):
+        for c in co.list_concepts(lib, scope, query=x, limit=10):
             if c["id"] not in {y["id"] for y in concepts}:
                 concepts.append(c)
-    return {"queries": queries, "paragraphs": _search(s, queries, top_k=top_k), "concepts": concepts}
+    return {"queries": queries, "paragraphs": search_all(lib, queries, top_k=top_k, scope=scope), "concepts": concepts}
 
 
 @app.get("/api/route")
@@ -367,22 +449,14 @@ def route(q: str, scope: str | None = None, max_documents: int = 8) -> dict[str,
     """意味層をたどって探す: 関係するまとまり → 資料 → 段落と、あわせて確かめたい読み残しの資料."""
     from . import navigate as nav
 
-    s = runtime.store()
-    r = nav.route(s, q, scope, max_documents)
-    shown = [d["document_id"] for res in r["results"] for d in res["documents"]]
-    u = nav.unread(s, q, read_document_ids=shown, limit=8)
-    # 画面で色分けするため、まとまりの名前と色を添える
-    for res in r["results"] + u["results"]:
-        cs = {c["id"]: c for c in cl.clusters(s, res["scope"])}
-        for d in res.get("documents", []) + res.get("unread", []):
-            c = cs.get(d.get("cluster"))
-            d["cluster_label"], d["cluster_color"] = (c["label"], c["color"]) if c else ("", "#6b7280")
-        for c in res.get("clusters", []):
-            c["color"] = cs.get(c["id"], {}).get("color", "#6b7280")
+    lib = _lib()
+    r = nav.route(lib, q, scope, max_documents)
+    shown = [d["document_id"] for d in r["documents"]]
+    u = nav.unread(lib, q, read_document_ids=shown, limit=8, scope=scope)
     return {"route": r, "unread": u}
 
 
-# ---------------- 意味層 ----------------
+# ---------------- 意味層 (課題と解決手段) ----------------
 class TypeIn(BaseModel):
     name: str
     description: str = ""
@@ -423,100 +497,98 @@ class RelationIn(BaseModel):
     kind: str = "解決する"
     paragraph_id: int | None = None
     note: str = ""
+    scope: str | None = None
 
 
 @app.get("/api/types")
 def types() -> list[dict[str, Any]]:
-    return ly.list_types(runtime.store())
+    return co.list_types(_lib())
 
 
 @app.post("/api/types")
 def add_type(body: TypeIn) -> dict[str, Any]:
-    return ly.add_type(runtime.store(), body.name, body.description, body.color)
+    return co.add_type(_lib(), body.name, body.description, body.color)
 
 
 @app.delete("/api/types/{name}")
 def delete_type(name: str) -> dict[str, Any]:
-    return {"deleted": ly.delete_type(runtime.store(), name)}
+    return {"deleted": co.delete_type(_lib(), name)}
 
 
 @app.get("/api/concepts")
-def concepts(type: str | None = None, q: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
-    return ly.list_concepts(runtime.store(), type_=type, query=q, limit=limit)
+def concepts(type: str | None = None, q: str | None = None, limit: int = 1000, scope: str | None = None) -> list[dict[str, Any]]:
+    return co.list_concepts(_lib(), scope, type_=type, query=q, limit=limit)
 
 
 @app.post("/api/concepts")
 def add_concept(body: ConceptIn) -> dict[str, Any]:
-    s = runtime.store()
-    out = ly.upsert_concept(s, body.name, body.type, body.description or None, body.aliases)
-    if body.paragraph_ids:
-        out["evidence"] = ly.add_evidence(s, out["id"], body.paragraph_ids)
-    return out
+    if not body.paragraph_ids:
+        raise ValueError("根拠にする段落を 1 つ以上選んでください")
+    return co.write(_lib(), body.name, body.type, body.paragraph_ids, body.description or None, body.aliases)
 
 
 @app.post("/api/concepts/merge")
 def merge(body: MergeIn) -> dict[str, Any]:
-    return ly.merge_concepts(runtime.store(), body.keep, body.drop)
+    return co.merge(_lib(), body.keep, body.drop)
 
 
 @app.get("/api/concepts/{concept_id}")
 def concept(concept_id: int) -> dict[str, Any]:
-    return ly.get_concept(runtime.store(), concept_id, evidence_limit=200)
+    return co.get_concept(_lib(), concept_id, evidence_limit=200)
 
 
 @app.patch("/api/concepts/{concept_id}")
 def patch_concept(concept_id: int, body: ConceptPatch) -> dict[str, Any]:
-    return ly.update_concept(runtime.store(), concept_id, body.name, body.type, body.description)
+    return co.update(_lib(), concept_id, body.name, body.type, body.description)
 
 
 @app.delete("/api/concepts/{concept_id}")
 def delete_concept(concept_id: int) -> dict[str, Any]:
-    return {"deleted": ly.delete_concept(runtime.store(), concept_id)}
+    return {"deleted": co.delete(_lib(), concept_id)}
 
 
 @app.post("/api/concepts/{concept_id}/aliases")
 def add_aliases(concept_id: int, body: AliasesIn) -> dict[str, Any]:
-    return {"added": ly.add_aliases(runtime.store(), concept_id, body.aliases)}
+    return {"added": co.add_aliases(_lib(), concept_id, body.aliases)}
 
 
 @app.delete("/api/concepts/{concept_id}/aliases/{alias}")
 def remove_alias(concept_id: int, alias: str) -> dict[str, Any]:
-    return {"deleted": ly.remove_alias(runtime.store(), concept_id, alias)}
+    return {"deleted": co.remove_alias(_lib(), concept_id, alias)}
 
 
 @app.post("/api/concepts/{concept_id}/evidence")
 def add_evidence(concept_id: int, body: EvidenceIn) -> dict[str, Any]:
-    return ly.add_evidence(runtime.store(), concept_id, body.paragraph_ids, body.note)
+    return co.add_evidence(_lib(), concept_id, body.paragraph_ids, body.note)
 
 
 @app.delete("/api/concepts/{concept_id}/evidence/{paragraph_id}")
 def remove_evidence(concept_id: int, paragraph_id: int) -> dict[str, Any]:
-    return {"deleted": ly.remove_evidence(runtime.store(), concept_id, paragraph_id)}
+    return {"deleted": co.remove_evidence(_lib(), concept_id, paragraph_id)}
 
 
 @app.post("/api/relations")
 def relate(body: RelationIn) -> dict[str, Any]:
-    return ly.relate(runtime.store(), body.source, body.target, body.kind, body.paragraph_id, body.note)
+    return co.relate(_lib(), body.source, body.target, body.kind, body.paragraph_id, body.note, body.scope)
 
 
 @app.delete("/api/relations/{relation_id}")
 def delete_relation(relation_id: int) -> dict[str, Any]:
-    return {"deleted": ly.delete_relation(runtime.store(), relation_id)}
+    return {"deleted": co.delete_relation(_lib(), relation_id)}
 
 
 @app.get("/api/graph")
-def graph(documents: bool = True, type: str | None = None) -> dict[str, Any]:
-    return ly.graph(runtime.store(), with_documents=documents, type_=type)
+def graph(documents: bool = True, type: str | None = None, scope: str | None = None) -> dict[str, Any]:
+    return co.graph(_lib(), scope, with_documents=documents, type_=type)
 
 
 @app.get("/api/keywords/graph")
-def keywords_graph(limit: int = 80, q: str | None = None, scope: str = cl.ALL) -> dict[str, Any]:
-    s = runtime.store()
-    docs = None if scope == cl.ALL else cl.scope_documents(s, scope)
-    g = kw.graph(s, limit=max(10, min(limit, 200)), query=q, documents=docs)
+def keywords_graph(limit: int = 80, q: str | None = None, scope: str = CENTRAL) -> dict[str, Any]:
+    st = _lib().for_scope(scope)
+    g = kw.graph(st, limit=max(10, min(limit, 200)), query=q)
     # 語の色を、その語がいちばん強く出るまとまりの色にする
-    cs = {c["id"]: c for c in cl.clusters(s, scope)}
-    of = cl.cluster_of_terms(s, [n["label"] for n in g["nodes"]], scope)
+    cs = {c["id"]: c for c in cl.clusters(st)}
+    of = cl.cluster_of_terms(st, [n["label"] for n in g["nodes"]])
     for n in g["nodes"]:
         c = cs.get(of.get(n["label"], -1))
         if c:
@@ -526,13 +598,13 @@ def keywords_graph(limit: int = 80, q: str | None = None, scope: str = cl.ALL) -
 
 
 @app.get("/api/keywords/documents")
-def keyword_documents(term: str, limit: int = 50) -> dict[str, Any]:
-    return kw.documents_with(runtime.store(), term, limit)
+def keyword_documents(term: str, limit: int = 50, scope: str = CENTRAL) -> dict[str, Any]:
+    return kw.documents_with(_lib().for_scope(scope), term, limit)
 
 
 @app.get("/api/export/layer.md", response_class=PlainTextResponse)
-def export_layer() -> str:
-    return layer_markdown(runtime.store())
+def export_layer(scope: str | None = None) -> str:
+    return co.layer_markdown(_lib(), scope)
 
 
 # ---------------- 画面 ----------------

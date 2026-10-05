@@ -82,18 +82,17 @@ def test_jobs_scan_and_delete_under(home, tmp_path):
 def test_nfd_paths_match_nfc(home, tmp_path):
     import unicodedata
 
-    from lexweft_lite import clusters as cl
-
     name = "IPランドスケープ事例"
     d = tmp_path / unicodedata.normalize("NFD", name)
     d.mkdir()
     (d / "a.md").write_text("# a\n\nランドスケープの事例。", encoding="utf-8")
-    s = runtime.store()
-    ingest(s, str(d))
-    src = s.list_documents()[0]["source"]
-    assert src == unicodedata.normalize("NFC", src)
-    nfc_dir = str(tmp_path / name)
-    assert cl.scope_documents(s, nfc_dir) and cl.scope_documents(s, unicodedata.normalize("NFD", nfc_dir))
+    lib = runtime.library()
+    row = lib.register(str(tmp_path / name))                       # NFC で登録しても
+    st = lib.store_for_folder(unicodedata.normalize("NFD", row["path"]))   # NFD で開いても同じ保存先
+    ingest(st, str(d), st.markdown_dir)                               # NFD のパスで取り込んでも
+    src = st.list_documents()[0]["source"]
+    assert src == unicodedata.normalize("NFC", src) and st.conn.execute("SELECT source FROM documents").fetchone()[0] == "a.md"
+    assert lib.for_source(str(d / "a.md")) is st
 
 
 def test_delete_outside_sources(home, tmp_path):
@@ -111,7 +110,12 @@ def test_delete_outside_sources(home, tmp_path):
     ingest_text(s, "メモ", "貼り付けた文章")
     c = TestClient(app)
     assert c.post("/api/documents/delete-outside", json={}, headers=H).status_code == 400   # 登録が無いと使えない
-    s.add_source(str(tmp_path / "notes"))
+    runtime.library().register(str(tmp_path / "notes"))
     assert c.get("/api/documents/outside").json()["documents"] == 1
     assert c.post("/api/documents/delete-outside", json={}, headers=H).json()["deleted"] == 1
     assert s.count_documents() == 4   # notes の 3 件と貼り付けた文章は残る
+
+
+def test_brackets_are_not_treated_as_code():
+    counts = kw.extract_terms(["[1] 熱暴走を相変化材料で抑える。", "詳しくは [冷却板の資料](https://example.com/a) を見る。"])
+    assert counts["熱暴走"] == 1 and counts["冷却板"] == 1

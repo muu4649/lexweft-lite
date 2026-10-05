@@ -5,16 +5,22 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import config
+from .library import Library
 from .store import Store
 
-_store: Store | None = None
+_library: Library | None = None
+
+
+def library() -> Library:
+    global _library
+    if _library is None:
+        _library = Library(config.home())
+    return _library
 
 
 def store() -> Store:
-    global _store
-    if _store is None:
-        _store = Store(config.db_path())
-    return _store
+    """アプリ側の目録 (フォルダの外の資料). フォルダの資料は library().store_for_folder() で開く."""
+    return library().catalog
 
 
 def markdown_dir() -> Path:
@@ -23,7 +29,7 @@ def markdown_dir() -> Path:
 
 def reset() -> None:
     """テスト用: 保存先を開き直す."""
-    global _store
-    if _store is not None:
-        _store.close()
-    _store = None
+    global _library
+    if _library is not None:
+        _library.close()
+    _library = None

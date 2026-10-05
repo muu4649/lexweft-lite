@@ -85,13 +85,26 @@ def cmd_mcp(_: argparse.Namespace) -> int:
 
 
 def cmd_add(args: argparse.Namespace) -> int:
+    """取り込む. 登録したフォルダの中のファイルはそのフォルダの保存先へ、それ以外はアプリ側へ. --register でフォルダを登録してから取り込む."""
     from .ingest import ingest
 
+    lib = runtime.library()
     code = 0
     for target in args.targets:
         try:
-            for r in ingest(runtime.store(), target, runtime.markdown_dir()):
+            if getattr(args, "register", False) and Path(target).expanduser().is_dir():
+                row = lib.register(target)
+                target = row["path"]
+                print(f"登録しました: {target}  (意味層の保存先: {'フォルダの中の _LeXWeft' if row['location'] == 'folder' else 'アプリ側'})")
+            st = lib.catalog if target.startswith(("http://", "https://")) else lib.for_source(target)
+            for r in ingest(st, target, st.markdown_dir):
                 print(f"{r.status:9s} #{r.document_id}  {r.title}  ({r.paragraphs} 段落)")
+            if st is not lib.catalog:
+                from .clusters import build
+                from .jobs import scan_signature
+
+                lib.touch(st.key, scan_signature(st.key))
+                build(st)
         except (FileNotFoundError, ValueError) as e:
             print(f"取り込めません: {target}: {e}", file=sys.stderr)
             code = 1
@@ -99,11 +112,18 @@ def cmd_add(args: argparse.Namespace) -> int:
 
 
 def cmd_status(_: argparse.Namespace) -> int:
-    s = runtime.store()
-    st = s.stats()
-    print(f"LeXWeft Lite {__version__}  保存先 {config.home()}")
-    print(f"資料 {st['documents']} / 段落 {st['paragraphs']} / 概念 {st['concepts']} / 関係 {st['relations']} / 根拠 {st['evidence']}")
-    print(f"意味層がまだ無い資料 {st['documents_without_concepts']}")
+    from .clusters import status
+
+    lib = runtime.library()
+    print(f"LeXWeft Lite {__version__}  アプリ側の保存先 {config.home()}")
+    for st in lib.stores():
+        s = st.stats()
+        if st is lib.catalog and not s["documents"]:
+            continue
+        lay = status(st)
+        where = st.path.rsplit("/", 1)[0]
+        print(f"\n[{st.label}]  ({where})")
+        print(f"  資料 {s['documents']} / 段落 {s['paragraphs']} / まとまり {lay['clusters']} (版 {lay['version']}) / 概念 {s['concepts']} / 関係 {s['relations']}")
     return 0
 
 
@@ -143,14 +163,17 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
 
 def cmd_export(args: argparse.Namespace) -> int:
-    from .markdown import layer_markdown, write_document_file
+    from .concepts import layer_markdown
+    from .markdown import write_document_file
 
+    lib = runtime.library()
     out = Path(args.out).expanduser() if args.out else config.home() / "export"
     out.mkdir(parents=True, exist_ok=True)
-    s = runtime.store()
-    for d in s.list_documents():
-        write_document_file(s, d["id"], out / "documents")
-    (out / "layer.md").write_text(layer_markdown(s), encoding="utf-8")
+    for st in lib.stores():
+        sub = out / "documents" / (st.label.replace("/", "_") if st is not lib.catalog else "フォルダの外")
+        for d in st.list_documents():
+            write_document_file(st, d["id"], sub)
+    (out / "layer.md").write_text(layer_markdown(lib), encoding="utf-8")
     print(f"書き出しました: {out}")
     return 0
 
@@ -168,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("mcp", help="MCP サーバー (stdio) として動く").set_defaults(func=cmd_mcp)
     sp = sub.add_parser("add", help="ファイル・フォルダ・URL を取り込む")
     sp.add_argument("targets", nargs="+")
+    sp.add_argument("--register", action="store_true", help="フォルダを登録してから取り込む (意味層をフォルダごとに作る)")
     sp.set_defaults(func=cmd_add)
     sub.add_parser("status", help="件数を見る").set_defaults(func=cmd_status)
     sp = sub.add_parser("prune", help="隠しフォルダ・開発用のフォルダ・ライセンス文などの資料を消す (元のファイルは消さない)")
