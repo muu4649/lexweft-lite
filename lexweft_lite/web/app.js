@@ -641,6 +641,22 @@ function drawGraph(g) {
     return grp;
   });
   let view = {x: 0, y: 0, k: 1}, drag = null, pan = null, alpha = 1;
+  // つながっていない集まりどうしが重ならないよう、集まりごとに中心を置く
+  const comp = new Array(nodes.length).fill(-1), adj = nodes.map(() => []);
+  edges.forEach(e => { adj[e.s].push(e.t); adj[e.t].push(e.s); });
+  let nc = 0;
+  nodes.forEach((_, i) => {
+    if (comp[i] >= 0) return;
+    const stack = [i]; comp[i] = nc;
+    while (stack.length) { const v = stack.pop(); adj[v].forEach(u => { if (comp[u] < 0) { comp[u] = nc; stack.push(u); } }); }
+    nc++;
+  });
+  const sizes = Array.from({length: nc}, (_, c) => comp.filter(x => x === c).length);
+  const order = sizes.map((n, c) => [n, c]).sort((p, q) => q[0] - p[0]).map(([, c]) => c);
+  const cols = Math.ceil(Math.sqrt(nc)), rows = Math.ceil(nc / cols), centers = {};
+  order.forEach((c, k) => { centers[c] = nc === 1 ? [W / 2, H / 2] : [W * ((k % cols) + .5) / cols, H * (Math.floor(k / cols) + .5) / rows]; });
+  nodes.forEach((p, i) => { const [cx, cy] = centers[comp[i]]; p.x = cx + Math.cos(i) * (20 + i % 7 * 12); p.y = cy + Math.sin(i) * (20 + i % 7 * 12); });
+  const rep = nodes.length < 30 ? 9000 : 3200, link = nodes.length < 30 ? 1.4 : 1;
   const apply = () => root.setAttribute('transform', `translate(${view.x},${view.y}) scale(${view.k})`);
   const toWorld = (cx, cy) => { const b = svg.getBoundingClientRect(); return [(cx - b.left - view.x) / view.k, (cy - b.top - view.y) / view.k]; };
   function tick() {
@@ -648,16 +664,17 @@ function drawGraph(g) {
     for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) {
       let dx = nodes[b].x - nodes[a].x, dy = nodes[b].y - nodes[a].y, d2 = dx * dx + dy * dy + .01;
       if (d2 > 640000) continue;
-      const f = 3200 / d2 * alpha, d = Math.sqrt(d2);
+      const f = rep / d2 * alpha, d = Math.sqrt(d2);
       dx /= d; dy /= d; nodes[a].vx -= dx * f; nodes[a].vy -= dy * f; nodes[b].vx += dx * f; nodes[b].vy += dy * f;
     }
     edges.forEach(e => {
       const a = nodes[e.s], b = nodes[e.t], dx = b.x - a.x, dy = b.y - a.y, d = Math.sqrt(dx * dx + dy * dy) || 1;
-      const L = e.relation ? 170 : 110, f = (d - L) * .02 * alpha;
+      const L = (e.relation ? 170 : 110) * link, f = (d - L) * .02 * alpha;
       a.vx += dx / d * f; a.vy += dy / d * f; b.vx -= dx / d * f; b.vy -= dy / d * f;
     });
     nodes.forEach((p, i) => {
-      p.vx += (W / 2 - p.x) * .0015 * alpha; p.vy += (H / 2 - p.y) * .0015 * alpha;
+      const [gx, gy] = centers[comp[i]];
+      p.vx += (gx - p.x) * (nc > 1 ? .004 : .0015) * alpha; p.vy += (gy - p.y) * (nc > 1 ? .004 : .0015) * alpha;
       if (drag && drag.i === i) { p.vx = p.vy = 0; return; }
       p.vx *= .6; p.vy *= .6; p.x += p.vx; p.y += p.vy;
     });
