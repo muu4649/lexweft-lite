@@ -64,7 +64,9 @@ def cmd_mcp_config(args: argparse.Namespace) -> int:
     current.setdefault("mcpServers", {})["lexweft-lite"] = server_entry()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
-    print(f"書き込みました: {path}\nClaude Desktop を一度終了して開き直すと、道具に lexweft-lite が出ます。")
+    print(f"書き込みました: {path}\n"
+          "次に、Claude Desktop をいったん終了して (Mac は ⌘Q) 開き直し、新しいチャットで「LeXWeft Lite に入っている資料は何件？」と聞いてください。\n"
+          "件数が返ってくれば、つながっています。")
     return 0
 
 

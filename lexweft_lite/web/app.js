@@ -815,15 +815,16 @@ loaders.connect = async () => {
       <li>ターミナルで次を実行すると、Claude Desktop の設定に LeXWeft Lite を足します (元の設定は .bak に残ります)。<pre class="code">${esc(S.mcp.mcpServers['lexweft-lite'].command)} mcp-config --write</pre></li>
       <li>手で足す場合は、Claude Desktop の設定 → 開発者 → 設定を編集 で開くファイルの <code>mcpServers</code> に次を入れます。
         <pre class="code" id="mcpjson">${esc(json)}</pre><button class="btn" id="copyjson">コピー</button></li>
-      <li>Claude Desktop を一度終了して開き直します。道具の一覧に <b>lexweft-lite</b> が出れば接続できています。</li>
+      <li>Claude Desktop をいったん終了して、開き直します（Mac は ⌘Q。Windows はタスクトレイの Claude アイコンを右クリックして「終了」。× で閉じるだけでは終了しません）。</li>
+      <li>新しいチャットで「<b>LeXWeft Lite に入っている資料は何件？</b>」と聞きます。件数が返ってくれば、つながっています。「LeXWeft Lite を使ってよいか」と聞かれたら「許可」を押してください。</li>
     </ol></div>
     <div class="panel"><h2>意味層を書かせる</h2>
-      <p>Claude Desktop で、プロンプトの一覧から <b>build_layer</b> を選ぶか、次のように頼みます。</p>
+      <p>Claude Desktop のチャットで、次のように頼みます。</p>
       <pre class="code">LeXWeft Lite の、まだ意味層が無い資料を読んで、課題と解決手段を根拠の段落つきで書いて。解決手段が課題を解く関係も結んで。</pre>
       <p class="small muted">まだ意味層が無い資料: ${pending.length ? pending.map(d => esc(d.title)).join('、') : 'ありません'}</p>
       <h3>調べるときの頼み方</h3>
-      <p class="small">プロンプト一覧の <b>investigate</b> を選ぶと、意味層をたどり、答える前に読み残しを確かめます。次のように頼んでも同じです。</p>
-      <pre class="code">LeXWeft Lite の意味層をたどって「セル間の熱伝播」を解決する手段を調べて。答える前に読み残しを確かめ、根拠の段落番号をつけて。</pre>
+      <p class="small">次のように頼むと、Claude は意味層をたどって関係する資料を探し、答える前に読み残しを確かめます。</p>
+      <pre class="code">LeXWeft Lite で「セル間の熱伝播」を解決する方法を調べて。関係する資料を読み残しがないように確かめてから、根拠の段落番号をつけて答えて。</pre>
       <p class="small muted">Claude 以外でも、MCP に対応したクライアントなら同じ設定でつなげます。アプリ自身は LLM を呼ばず、API キーも使いません。</p></div>
     <div class="panel"><h2>データの扱い</h2>
       <p class="small">資料と意味層は、この PC の保存先にだけ保存します。アプリ自身は外部に送りません。</p>

@@ -133,7 +133,7 @@ async function testerDeck() {
   s = pres.addSlide({ masterName: "CONTENT", sectionTitle: "深める" });
   s.addText("Claude とつなぐと、課題と解決手段を根拠つきで書ける", { placeholder: "title" });
   step(s, 1, 0.6, 1.75, 5.2, "セットアップの最後で y を押す", "Claude Desktop に LeXWeft Lite が登録される");
-  step(s, 2, 0.6, 2.95, 5.2, "Claude Desktop を開き直す", "道具の一覧に lexweft-lite が出れば接続できている");
+  step(s, 2, 0.6, 2.95, 5.2, "Claude Desktop を開き直して確かめる", "「LeXWeft Lite に入っている資料は何件？」と聞き、件数が返ればつながっている");
   step(s, 3, 0.6, 4.15, 5.2, "まとまりを選んで頼む", null);
   promptBox(s, 1.22, 4.7, 4.6, 1.5, "LeXWeft Lite のまとまり「セル・相変化材料・異常発熱」の資料を読んで、課題と解決手段を根拠の段落つきで書いて。");
   shot(s, "d_layer.png", 6.2, 1.6, 6.5, "課題と解決手段のつながりの画面");
@@ -172,7 +172,7 @@ async function testerDeck() {
   s.addText("困ったときは", { placeholder: "title" });
   s.addTable([
     [{ text: "こんなとき", options: { bold: true, color: "7DD3E4" } }, { text: "こうしてください", options: { bold: true, color: "7DD3E4" } }],
-    ["Claude に lexweft-lite が出ない", "Claude Desktop を完全に終了して開き直す。出なければセットアップをもう一度実行して最後に y"],
+    ["Claude に資料の件数を聞いても分からないと言われる", "Claude Desktop を完全に終了して（⌘Q）開き直す。だめならセットアップをもう一度実行して最後に y"],
     ["地図が「作っています」のまま", "資料が多いと数分かかる。終わると自動で出る"],
     ["まとまりの名前がしっくりこない", "テーマごとにフォルダを分けて登録すると、まとまりがはっきりする"],
     ["PDF の本文が出ない", "スキャン画像の PDF は文字を取り出せない。文字を選択できる PDF を使う"],
