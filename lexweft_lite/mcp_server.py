@@ -95,6 +95,16 @@ def lw_map(scope: str | None = None) -> dict[str, Any]:
 
 
 @server.tool()
+def lw_group_links(scope: str, group_a: str | None = None, group_b: str | None = None) -> dict[str, Any]:
+    """フォルダの中の 2 つのグループ (サブフォルダ) の関わり: 片方のまとまりと、もう片方のまとまりを結ぶ線、
+    その線のもとになった近い資料の組 (document_id・題名・近さ・共通の語). グループを省略すると資料の多い 2 つ.
+    近さはベクトルで決めているので、関係があるかは lw_read_document で両方を読んで確かめる."""
+    from . import groups as gr
+
+    return gr.links(_lib().for_scope(scope), group_a, group_b)
+
+
+@server.tool()
 def lw_refresh(scope: str | None = None) -> dict[str, Any]:
     """登録したフォルダを読み直し、新しいファイル・変わったファイル・消えたファイルを反映して、意味層を作り直す.
     scope を省略すると、中身が変わったフォルダすべて. 終わるまで待つ."""

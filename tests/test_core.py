@@ -136,3 +136,20 @@ def test_patent_wording_in_terms():
     assert "シートモールディングコンパウンド" in t                           # 長い語も途中で切らない
     assert not {"メタ", "一般式", "ステップ"} & set(t)                       # 特許の決まり文句は数えない
     assert "酸基" in t and "酸基及" not in t                                 # 「及び」の漢字を語に付けない
+
+
+def test_docx_with_entities_is_refused(tmp_path):
+    import zipfile
+
+    import pytest
+
+    from lexweft_lite.loaders import load_docx, load_url
+
+    bomb = tmp_path / "bomb.docx"
+    with zipfile.ZipFile(bomb, "w") as z:
+        z.writestr("word/document.xml", '<?xml version="1.0"?><!DOCTYPE l [<!ENTITY a "aaaaaaaaaa"><!ENTITY b "&a;&a;&a;&a;&a;">]>'
+                   '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>&b;</w:t></w:r></w:p></w:body></w:document>')
+    with pytest.raises(ValueError):
+        load_docx(bomb)
+    with pytest.raises(ValueError):
+        load_url("file:///etc/passwd")

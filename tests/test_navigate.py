@@ -115,7 +115,7 @@ def test_route_api(home, tmp_path):
     from lexweft_lite.web import app
 
     _one_folder(tmp_path)
-    r = TestClient(app).get("/api/route", params={"q": "熱暴走を防ぐ方法", "max_documents": 2}).json()
+    r = TestClient(app, base_url="http://127.0.0.1").get("/api/route", params={"q": "熱暴走を防ぐ方法", "max_documents": 2}).json()
     docs = r["route"]["documents"]
     left = r["unread"]["unread"]
     assert len(docs) == 2 and docs[0]["cluster_color"].startswith("#")

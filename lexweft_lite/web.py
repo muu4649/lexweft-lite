@@ -19,6 +19,7 @@ from pydantic import BaseModel
 from . import __version__, config
 from . import clusters as cl
 from . import concepts as co
+from . import groups as gr
 from . import keywords as kw
 from . import layer as ly
 from . import runtime
@@ -29,7 +30,10 @@ from .markdown import document_markdown, remove_document_file
 from .search import search_all
 
 WEB_DIR = Path(__file__).parent / "web"
-ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]", "testserver"}
+ALLOWED_HOSTS = {"127.0.0.1", "localhost", "[::1]"}
+# 画面はこのアプリの中のファイルだけを使う (スクリプトは /static のファイルだけ。style 属性は画面の色付けに使う)
+CSP = ("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; "
+       "connect-src 'self'; font-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'")
 
 
 def _lib():
@@ -74,6 +78,13 @@ async def guard(request: Request, call_next):  # type: ignore[no-untyped-def]
     if request.method not in ("GET", "HEAD", "OPTIONS") and request.headers.get("x-lexweft") != "1":
         return JSONResponse({"detail": "missing X-LexWeft header"}, status_code=403)
     resp = await call_next(request)
+    # ほかのサイトに埋め込ませない・ほかの場所のスクリプトを読ませない・型を推測させない
+    resp.headers["Content-Security-Policy"] = CSP
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "no-referrer"
+    resp.headers["Cross-Origin-Opener-Policy"] = "same-origin"
+    resp.headers["Cross-Origin-Resource-Policy"] = "same-origin"
     if request.url.path.startswith("/api/") or request.url.path in ("/", "/index.html"):
         resp.headers["Cache-Control"] = "no-store"
     elif request.url.path.startswith("/static/"):
@@ -243,12 +254,15 @@ def pick_folder() -> dict[str, Any]:
     system = platform.system()
     try:
         if system == "Darwin":
-            r = subprocess.run(["osascript", "-e", 'POSIX path of (choose folder with prompt "取り込むフォルダを選んでください")'],
+            r = subprocess.run(["/usr/bin/osascript", "-e", 'POSIX path of (choose folder with prompt "取り込むフォルダを選んでください")'],
                                capture_output=True, text=True, timeout=600)
         elif system == "Windows":
             ps = ("Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.FolderBrowserDialog; "
                   "$d.Description = '取り込むフォルダを選んでください'; if ($d.ShowDialog() -eq 'OK') { $d.SelectedPath }")
-            r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True, timeout=600)
+            import os
+
+            exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+            r = subprocess.run([exe, "-NoProfile", "-STA", "-Command", ps], capture_output=True, text=True, timeout=600)
         else:
             raise HTTPException(501, "この OS ではフォルダ選択の窓を出せません。パスを入力してください")
     except subprocess.TimeoutExpired:
@@ -340,7 +354,33 @@ def map_data(scope: str = CENTRAL) -> dict[str, Any]:
     s = cl.status(st)
     if (s["stale"] or not s["built_at"]) and s["documents_now"]:
         cl.build_in_background(st)   # まだ無い・古い意味層は、開いたときに作る
-    return cl.map_data(st)
+    return gr.add_to_map(st, cl.map_data(st))
+
+
+class GroupIn(BaseModel):
+    scope: str
+    key: str
+    label: str = ""
+
+
+@app.get("/api/groups")
+def group_list(scope: str = CENTRAL) -> list[dict[str, Any]]:
+    """グループ (登録したフォルダの 1 段下のサブフォルダ) の一覧."""
+    return gr.groups(_lib().for_scope(scope))
+
+
+@app.post("/api/groups/rename")
+def group_rename(body: GroupIn) -> dict[str, Any]:
+    try:
+        return gr.rename(_lib().for_scope(body.scope), body.key, body.label)
+    except KeyError as e:
+        raise HTTPException(404, str(e.args[0])) from e
+
+
+@app.get("/api/groups/links")
+def group_links(scope: str = CENTRAL, a: str | None = None, b: str | None = None, max_edges: int = Query(30, ge=1, le=100)) -> dict[str, Any]:
+    """2 つのグループの関わり (まとまりどうしの線と、近い資料の組)."""
+    return gr.links(_lib().for_scope(scope), a, b, max_edges=max_edges)
 
 
 @app.get("/api/clusters/{cluster_id}")

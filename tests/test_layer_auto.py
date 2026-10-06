@@ -64,7 +64,7 @@ def test_scopes_api(home, tmp_path):
     from lexweft_lite.web import app
 
     st = register_and_import(make_folder(tmp_path, "battery", BATTERY))
-    c = TestClient(app)
+    c = TestClient(app, base_url="http://127.0.0.1")
     sc = c.get("/api/scopes").json()
     assert [x["scope"] for x in sc] == [st.key] and sc[0]["clusters"] >= 1 and sc[0]["location"] == "folder"
     m = c.get("/api/map", params={"scope": st.key}).json()

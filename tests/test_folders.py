@@ -56,7 +56,7 @@ def test_jobs_scan_and_delete_under(home, tmp_path):
     from lexweft_lite.web import app
 
     _tree(tmp_path)
-    c = TestClient(app)
+    c = TestClient(app, base_url="http://127.0.0.1")
     assert c.get("/api/scan", params={"path": str(tmp_path)}).json()["files"] == 3
     job = c.post("/api/jobs", json={"path": str(tmp_path)}, headers=H).json()
     for _ in range(100):
@@ -108,7 +108,7 @@ def test_delete_outside_sources(home, tmp_path):
     from lexweft_lite.ingest import ingest_text
 
     ingest_text(s, "メモ", "貼り付けた文章")
-    c = TestClient(app)
+    c = TestClient(app, base_url="http://127.0.0.1")
     assert c.post("/api/documents/delete-outside", json={}, headers=H).status_code == 400   # 登録が無いと使えない
     runtime.library().register(str(tmp_path / "notes"))
     assert c.get("/api/documents/outside").json()["documents"] == 1

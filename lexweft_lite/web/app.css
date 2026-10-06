@@ -86,3 +86,15 @@ ol.steps li { margin-bottom: 10px; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chip.why-sem { background: #133640; color: #9fdcec; } :root:not([data-theme="light"]) .chip.why-txt { background: #3a2216; color: #f3b48f; } }
 :root[data-theme="dark"] .chip.why-sem { background: #133640; color: #9fdcec; }
 :root[data-theme="dark"] .chip.why-txt { background: #3a2216; color: #f3b48f; }
+
+/* グループ */
+.mix { display: flex; height: 4px; width: 100%; border-radius: 2px; overflow: hidden; margin-top: 3px; background: var(--line); }
+.mix i { display: block; height: 100%; }
+.clist li > span:first-child { flex: 1; min-width: 0; }
+.chip.bridge { background: #fde68a; color: #713f12; font-size: 11px; padding: 0 6px; }
+:root[data-theme="dark"] .chip.bridge { background: #4a3b10; color: #fde68a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .chip.bridge { background: #4a3b10; color: #fde68a; } }
+#bip { display: block; }
+#bip .grouphead { font-size: 16px; font-weight: 700; }
+#bip .gnode { font-size: 12px; fill: var(--ink); paint-order: stroke; stroke: var(--panel); stroke-width: 3px; }
+.pair { border-left: 3px solid var(--line); padding: 4px 8px; margin: 8px 0; }

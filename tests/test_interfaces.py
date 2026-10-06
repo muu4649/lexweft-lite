@@ -14,7 +14,7 @@ H = {"X-LexWeft": "1"}
 def test_api_flow(home, sample_file):
     from lexweft_lite.web import app
 
-    c = TestClient(app)
+    c = TestClient(app, base_url="http://127.0.0.1")
     assert c.post("/api/documents/path", json={"path": str(sample_file)}).status_code == 403  # 書き込みにはヘッダが要る
     r = c.post("/api/documents/path", json={"path": str(sample_file)}, headers=H).json()
     doc_id = r[0]["document_id"]
@@ -116,3 +116,17 @@ def test_serve_for_app_writes_ready_file(home, tmp_path):
     finally:
         proc.terminate()
         proc.wait(timeout=10)
+
+
+def test_security_headers_and_hosts(home):
+    from lexweft_lite.web import app
+
+    c = TestClient(app, base_url="http://127.0.0.1")
+    r = c.get("/")
+    csp = r.headers["content-security-policy"]
+    assert "script-src 'self'" in csp and "frame-ancestors 'none'" in csp and "unsafe-eval" not in csp
+    assert r.headers["x-frame-options"] == "DENY" and r.headers["x-content-type-options"] == "nosniff"
+    assert "<script>" not in r.text   # 画面にその場のスクリプトを書かない (CSP で止まるため)
+    assert TestClient(app, base_url="http://testserver").get("/api/overview").status_code == 403    # テスト用の名前も断る
+    assert TestClient(app, base_url="http://evil.example").get("/api/overview").status_code == 403
+    assert c.post("/api/sources", json={"path": "/tmp"}).status_code == 403    # 書き込みは X-LexWeft ヘッダーが要る

@@ -494,15 +494,31 @@ loaders.map = async () => {
   if (S.map.status.building || (S.map.status.stale && S.map.status.documents_now)) setTimeout(() => S.tab === 'map' && loaders.map(), 3000);
 };
 
+function hasGroups(M) { return (M.groups || []).length >= 2; }
+function groupColor(M, key) { return (M.groups || []).find(g => g.key === key)?.color || '#6b7280'; }
+function groupLabel(M, key) { return (M.groups || []).find(g => g.key === key)?.label || key; }
+// まとまりの中のグループの内訳 (細い帯)
+function mixBar(M, c) {
+  if (!hasGroups(M) || !c.groups) return '';
+  const total = Object.values(c.groups).reduce((a, b) => a + b, 0) || 1;
+  return `<span class="mix" title="${esc(Object.entries(c.groups).map(([k, n]) => `${groupLabel(M, k)} ${n} 件`).join(' ・ '))}">${
+    M.groups.filter(g => c.groups[g.key]).map(g => `<i style="width:${(100 * c.groups[g.key] / total).toFixed(1)}%;background:${esc(g.color)}"></i>`).join('')}</span>`;
+}
 function renderMap() {
-  const M = S.map, st = M.status;
-  const list = M.clusters.map(c => `<li data-cl="${c.id}" class="${S.mapSel === c.id ? 'sel' : ''}"><span><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)}</span><span class="small muted">${num(c.size)}</span></li>`).join('');
+  const M = S.map, st = M.status, byGroup = hasGroups(M) && S.mapColor === 'group';
+  const list = M.clusters.map(c => `<li data-cl="${c.id}" class="${S.mapSel === c.id ? 'sel' : ''}"><span><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)}${c.bridge ? ' <span class="chip bridge" title="2 つ以上のグループの資料が入っているまとまり">橋渡し</span>' : ''}${mixBar(M, c)}</span><span class="small muted">${num(c.size)}</span></li>`).join('');
+  const colorSel = hasGroups(M) ? `<div class="row small" style="margin:8px 0">色:
+      <label><input type="radio" name="mcolor" value="cluster" ${byGroup ? '' : 'checked'}> まとまり</label>
+      <label><input type="radio" name="mcolor" value="group" ${byGroup ? 'checked' : ''}> グループ</label></div>` : '';
+  const legend = byGroup
+    ? `点 = 資料 ・ 色 = グループ（サブフォルダ）<br>${M.groups.map(g => `<span class="dot" style="background:${esc(g.color)}"></span> ${esc(g.label)} ${num(g.documents)} 件`).join('　')}<br>2 つの色が混ざっている所が、グループどうしの接点です`
+    : '点 = 資料（近い点ほど中身が似ている） ・ 色 = まとまり<br>ホイールで拡大、ドラッグで移動、点を押すと資料';
   let empty = '';
   if (!M.points.length) empty = (st.building || (st.stale && st.documents_now)) ? '意味層を作っています…（資料が多いと数分かかります）'
     : st.documents_now ? 'まとまりを作れる語がありません。' : '「取り込み」でフォルダを登録すると、ここに資料の地図ができます。';
   $('#main').innerHTML = `<div class="mapcols">
     <div class="panel" style="max-height:calc(100vh - 110px);overflow:auto">
-      <div style="margin-bottom:10px">${scopeSelect()}</div>
+      <div style="margin-bottom:10px">${scopeSelect()}</div>${colorSel}
       <h2>まとまり <span class="small muted">${num(M.clusters.length)}</span></h2>
       <div class="small muted" style="margin-bottom:8px">資料の中身（語の使われ方）をベクトルにして、近いものをまとめました。名前はそのまとまりに特に多く出る語です。</div>
       <ul class="clist">${list}</ul>
@@ -511,13 +527,14 @@ function renderMap() {
     </div>
     <div>
       <div class="graphwrap">${M.points.length ? '<svg id="graph"></svg>' : `<div class="empty">${empty}</div>`}
-        <div class="legend small">点 = 資料（近い点ほど中身が似ている） ・ 色 = まとまり<br>ホイールで拡大、ドラッグで移動、点を押すと資料</div>
+        <div class="legend small">${legend}</div>
         <div class="side" id="gside" ${S.mapSel == null ? 'hidden' : ''}></div>
         <div id="tip" class="tip" hidden></div></div>
     </div></div>`;
   $$('[data-cl]').forEach(li => li.onclick = () => selectCluster(+li.dataset.cl));
   if ($('#mrebuild')) $('#mrebuild').onclick = () => guard(async () => { await post('/api/layer/rebuild', {scope: currentScope()}); loaders.map(); });
   bindScope(() => loaders.map());
+  $$('[name=mcolor]').forEach(r => r.onchange = () => { S.mapColor = r.value; renderMap(); });
   if (M.points.length) drawMap(M);
   if (S.mapSel != null) selectCluster(S.mapSel);
 }
@@ -526,13 +543,14 @@ function drawMap(M) {
   const svg = $('#graph'), NS = 'http://www.w3.org/2000/svg';
   const W = svg.clientWidth || 900, H = svg.clientHeight || 600, pad = 40;
   const color = Object.fromEntries(M.clusters.map(c => [c.id, c.color]));
+  const byGroup = hasGroups(M) && S.mapColor === 'group';
   const root = document.createElementNS(NS, 'g'); svg.appendChild(root);
   const X = x => pad + x * (W - pad * 2), Y = y => pad + y * (H - pad * 2);
   const r = M.points.length > 2000 ? 3 : M.points.length > 500 ? 4 : 6;
   const dots = M.points.map(p => {
     const c = document.createElementNS(NS, 'circle');
     c.setAttribute('cx', X(p.x)); c.setAttribute('cy', Y(p.y)); c.setAttribute('r', r);
-    c.setAttribute('fill', color[p.c] || '#6b7280'); c.setAttribute('fill-opacity', .75);
+    c.setAttribute('fill', byGroup ? groupColor(M, p.g) : (color[p.c] || '#6b7280')); c.setAttribute('fill-opacity', .75);
     c.dataset.c = p.c; c.style.cursor = 'pointer';
     c.addEventListener('mouseenter', ev => { const t = $('#tip'); t.textContent = p.title; t.hidden = false; t.style.left = (ev.offsetX + 12) + 'px'; t.style.top = (ev.offsetY + 12) + 'px'; });
     c.addEventListener('mouseleave', () => ($('#tip').hidden = true));
@@ -544,7 +562,7 @@ function drawMap(M) {
     const t = document.createElementNS(NS, 'text');
     t.textContent = c.label.length > 18 ? c.label.slice(0, 17) + '…' : c.label;
     t.setAttribute('x', X(c.x)); t.setAttribute('y', Y(c.y)); t.setAttribute('text-anchor', 'middle'); t.setAttribute('class', 'maplabel');
-    t.style.fill = c.color;
+    t.style.fill = byGroup ? 'var(--ink)' : c.color;
     g.appendChild(t); g.addEventListener('click', ev => { ev.stopPropagation(); selectCluster(c.id); });
     root.appendChild(g);
   });
@@ -583,6 +601,101 @@ async function selectCluster(id) {
     $$('#gside [data-opendoc]').forEach(b => b.onclick = () => openDoc(+b.dataset.opendoc));
     $('#copyprompt').onclick = () => guard(async () => { await navigator.clipboard.writeText(prompt); toast('コピーしました。Claude Desktop に貼って頼んでください'); });
   });
+}
+
+// ---------------- グループのつながり ----------------
+loaders.groups = async () => {
+  const scope = currentScope();
+  S.glinks = await api('/api/groups/links?' + new URLSearchParams({scope, ...(S.ga ? {a: S.ga} : {}), ...(S.gb ? {b: S.gb} : {})}));
+  S.gedge = null;
+  renderGroups();
+};
+
+function renderGroups() {
+  const L = S.glinks, gs = L.groups || [];
+  const gname = k => gs.find(g => g.key === k)?.label || k, gcol = k => gs.find(g => g.key === k)?.color || '#6b7280';
+  const sel = (id, cur, other) => `<select id="${id}">${gs.filter(g => g.key !== other).map(g => `<option value="${esc(g.key)}" ${g.key === cur ? 'selected' : ''}>${esc(g.label)} (${num(g.documents)} 件)</option>`).join('')}</select>`;
+  const names = gs.map(g => `<div class="row small" style="margin:4px 0"><span class="dot" style="background:${esc(g.color)}"></span>
+      <span class="muted" style="min-width:9em">${esc(g.key || '（フォルダの直下）')}</span>
+      <input type="text" data-gkey="${esc(g.key)}" value="${esc(g.label)}" style="width:14em"> <button class="btn" data-grename="${esc(g.key)}">名前を変える</button></div>`).join('');
+  $('#main').innerHTML = `<div class="mapcols">
+    <div class="panel" style="max-height:calc(100vh - 110px);overflow:auto">
+      <div style="margin-bottom:10px">${scopeSelect()}</div>
+      <h2>グループのつながり</h2>
+      <div class="small muted" style="margin-bottom:8px">グループ = 登録したフォルダの中のサブフォルダ。片方のグループの資料ごとに、もう片方で中身が近い資料を探し、近い組を「まとまり ↔ まとまり」の線にまとめました。線が太いほど、近い組が多い。</div>
+      ${gs.length >= 2 ? `<div class="small">左</div>${sel('ga', L.a, null)}<div class="small" style="margin-top:6px">右</div>${sel('gb', L.b, L.a)}
+        <div class="small muted" style="margin-top:8px">近い組 ${num(L.pairs)} ・ 線 ${num(L.edges.length)}</div>` : ''}
+      <h3>グループの名前</h3>${names || '<div class="small muted">なし</div>'}
+    </div>
+    <div><div class="graphwrap">${L.edges.length ? '<svg id="bip"></svg>' : `<div class="empty">${esc(L.note || 'つながりは見つかりませんでした。')}</div>`}
+      <div class="side" id="gside" hidden></div><div id="tip" class="tip" hidden></div></div>
+      ${L.edges.length ? `<div class="small muted" style="margin-top:6px">${esc(L.note)}</div>` : ''}</div></div>`;
+  bindScope(() => { S.ga = S.gb = null; loaders.groups(); });
+  if ($('#ga')) $('#ga').onchange = e => { S.ga = e.target.value; if (S.gb === S.ga) S.gb = null; loaders.groups(); };
+  if ($('#gb')) $('#gb').onchange = e => { S.gb = e.target.value; loaders.groups(); };
+  $$('[data-grename]').forEach(b => b.onclick = () => guard(async () => {
+    const key = b.dataset.grename, label = $(`[data-gkey="${CSS.escape(key)}"]`).value;
+    await post('/api/groups/rename', {scope: currentScope(), key, label}); toast('グループの名前を変えました'); loaders.groups();
+  }));
+  if (L.edges.length) drawGroups(L, gname, gcol);
+}
+
+function drawGroups(L, gname, gcol) {
+  const svg = $('#bip'), NS = 'http://www.w3.org/2000/svg', wrap = svg.parentElement;
+  const rows = Math.max(L.left.length, L.right.length);
+  const H = Math.max(wrap.clientHeight, 90 + rows * 46), W = wrap.clientWidth || 900;
+  svg.setAttribute('width', W); svg.setAttribute('height', H); svg.style.height = H + 'px'; wrap.style.overflow = 'auto';
+  // 名前を置く幅を画面の幅から決める (狭い画面でも名前が切れないように)
+  const room = Math.min(320, Math.max(120, W * 0.36)), chars = Math.max(6, Math.floor((room - 50) / 12.5));
+  const xl = room, xr = W - room, top = 70;
+  const step = n => (H - top - 30) / Math.max(1, n);
+  const pos = {}; L.left.forEach((c, i) => pos['a' + c.id] = [xl, top + step(L.left.length) * (i + 0.5)]);
+  L.right.forEach((c, i) => pos['b' + c.id] = [xr, top + step(L.right.length) * (i + 0.5)]);
+  const maxPairs = Math.max(...L.edges.map(e => e.pairs)), maxDocs = Math.max(...L.left.concat(L.right).map(c => c.documents), 1);
+  const el = (tag, attrs, parent = svg) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); parent.appendChild(e); return e; };
+  const head = (x, anchor, key) => { const t = el('text', {x, y: 34, 'text-anchor': anchor, class: 'grouphead'}); t.textContent = gname(key); t.style.fill = gcol(key); };
+  head(xl, 'end', L.a); head(xr, 'start', L.b);
+  const paths = L.edges.map((e, i) => {
+    const [x1, y1] = pos['a' + e.a], [x2, y2] = pos['b' + e.b], mx = (x1 + x2) / 2;
+    const p = el('path', {d: `M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`, fill: 'none', stroke: 'var(--accent)',
+                          'stroke-width': (1.5 + 12 * e.pairs / maxPairs).toFixed(1), 'stroke-opacity': .28, 'stroke-linecap': 'round'});
+    p.style.cursor = 'pointer'; p.dataset.a = e.a; p.dataset.b = e.b;
+    p.addEventListener('mouseenter', ev => { p.setAttribute('stroke-opacity', .75); const t = $('#tip'); t.textContent = `近い組 ${e.pairs} ・ 共通の言葉: ${e.terms.slice(0, 4).join('、')}`; t.hidden = false; t.style.left = (ev.offsetX + 12) + 'px'; t.style.top = (ev.offsetY + 12) + 'px'; });
+    p.addEventListener('mouseleave', () => { if (S.gedge !== i) p.setAttribute('stroke-opacity', .28); $('#tip').hidden = true; });
+    p.addEventListener('click', () => showGroupEdge(L, i, gname));
+    return p;
+  });
+  S.gpaths = paths;
+  const node = (c, side) => {
+    const [x, y] = pos[side + c.id], r = 5 + 9 * Math.sqrt(c.documents / maxDocs);
+    const g = el('g', {}); g.style.cursor = 'pointer';
+    el('circle', {cx: x, cy: y, r, fill: c.color, stroke: gcol(side === 'a' ? L.a : L.b), 'stroke-width': 3}, g);
+    const t = el('text', {x: side === 'a' ? x - r - 8 : x + r + 8, y: y + 4, 'text-anchor': side === 'a' ? 'end' : 'start', class: 'gnode'}, g);
+    t.textContent = `${c.label.length > chars ? c.label.slice(0, chars - 1) + '…' : c.label} (${c.documents})`;
+    const full = document.createElementNS(NS, 'title'); full.textContent = `${c.label} (${c.documents} 件)`; g.appendChild(full);
+    g.addEventListener('click', () => paths.forEach(p => p.setAttribute('stroke-opacity', (side === 'a' ? +p.dataset.a : +p.dataset.b) === c.id ? .8 : .08)));
+  };
+  L.left.forEach(c => node(c, 'a')); L.right.forEach(c => node(c, 'b'));
+}
+
+function showGroupEdge(L, i, gname) {
+  S.gedge = i;
+  (S.gpaths || []).forEach((p, k) => p.setAttribute('stroke-opacity', k === i ? .85 : .12));
+  const e = L.edges[i], la = L.left.find(c => c.id === e.a), lb = L.right.find(c => c.id === e.b);
+  const where = (scopes().find(x => x.scope === currentScope()) || {}).label || '';
+  const prompt = `LeXWeft Lite のフォルダ「${where}」で、グループ「${gname(L.a)}」のまとまり「${la.label}」とグループ「${gname(L.b)}」のまとまり「${lb.label}」の関わりを調べて。lw_group_links で近い資料の組を出し、両方を読んで、どの技術がどう生かせそうかを根拠の段落番号つきでまとめて。`;
+  const side = $('#gside'); side.hidden = false;
+  side.innerHTML = `<div class="row" style="justify-content:space-between"><b>${esc(la.label)}<br>↔ ${esc(lb.label)}</b><button class="link" id="gclose">×</button></div>
+    <div class="small muted">近い組 ${num(e.pairs)} ・ 近さの平均 ${e.similarity.toFixed(2)}</div>
+    <h3>共通の言葉</h3><div>${e.terms.map(t => `<span class="chip">${esc(t)}</span>`).join('') || '<span class="small muted">なし</span>'}</div>
+    <h3>近い資料の組</h3>${e.examples.map(x => `<div class="pair small">
+      <div><span class="dot" style="background:${esc(L.groups.find(g => g.key === L.a)?.color)}"></span> <button class="link" data-opendoc="${x.a.id}">${esc(x.a.title)}</button></div>
+      <div><span class="dot" style="background:${esc(L.groups.find(g => g.key === L.b)?.color)}"></span> <button class="link" data-opendoc="${x.b.id}">${esc(x.b.title)}</button></div>
+      <div class="muted">近さ ${x.similarity.toFixed(2)}${x.terms.length ? ' ・ ' + x.terms.map(esc).join('、') : ''}</div></div>`).join('')}
+    <h3>Claude で深める</h3><pre class="code">${esc(prompt)}</pre><button class="btn" id="copyprompt">頼み方をコピー</button>`;
+  $('#gclose').onclick = () => { side.hidden = true; S.gedge = null; (S.gpaths || []).forEach(p => p.setAttribute('stroke-opacity', .28)); };
+  $$('#gside [data-opendoc]').forEach(b => b.onclick = () => openDoc(+b.dataset.opendoc));
+  $('#copyprompt').onclick = () => guard(async () => { await navigator.clipboard.writeText(prompt); toast('コピーしました。Claude Desktop に貼って頼んでください'); });
 }
 
 // ---------------- つながり ----------------

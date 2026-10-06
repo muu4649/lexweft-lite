@@ -102,12 +102,21 @@ def load_pdf(path: Path) -> Loaded:
 
 
 _W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+MAX_DOCX_XML = 200_000_000   # Word の本文 (展開後) の上限
+MAX_URL_BYTES = 50_000_000   # URL から取り込むときの上限
 
 
 def load_docx(path: Path) -> Loaded:
     """Word (.docx) の本文を読む. 見出しスタイルの段落は Markdown の見出しにする. 追加のライブラリは使わない."""
     with zipfile.ZipFile(path) as z:
-        root = ElementTree.fromstring(z.read("word/document.xml"))
+        info = z.getinfo("word/document.xml")
+        if info.file_size > MAX_DOCX_XML:   # 展開すると極端に大きくなるファイル (ZIP 爆弾) は読まない
+            raise ValueError(f"Word の本文が大きすぎます ({info.file_size // 1_000_000} MB)")
+        raw = z.read("word/document.xml")
+    # 本物の Word の本文に DOCTYPE は無い。あるものは、実体参照を何重にも展開させる細工 (XML 爆弾) のおそれがあるので読まない
+    if b"<!DOCTYPE" in raw[:4096].upper() or b"<!ENTITY" in raw.upper():
+        raise ValueError("Word の本文に DOCTYPE / ENTITY があるので読みません")
+    root = ElementTree.fromstring(raw)
     lines: list[str] = []
     for p in root.iter(f"{_W}p"):
         text = "".join(t.text or "" for t in p.iter(f"{_W}t")).strip()
@@ -234,21 +243,31 @@ def load_path(path: str | Path) -> Iterator[Loaded]:
 def load_url(url: str) -> Loaded:
     import httpx
 
-    resp = httpx.get(url, follow_redirects=True, timeout=30.0, headers={"User-Agent": "lexweft-lite/0.1"})
-    resp.raise_for_status()
-    ctype = resp.headers.get("content-type", "")
+    if not url.lower().startswith(("http://", "https://")):
+        raise ValueError("取り込める URL は http:// か https:// で始まるものだけです")
+    with httpx.stream("GET", url, follow_redirects=True, timeout=30.0, headers={"User-Agent": "lexweft-lite"}) as resp:
+        resp.raise_for_status()
+        body = bytearray()
+        for chunk in resp.iter_bytes():
+            body += chunk
+            if len(body) > MAX_URL_BYTES:   # 大きすぎる応答でメモリを使い切らないように
+                raise ValueError(f"大きすぎるので取り込みません ({MAX_URL_BYTES // 1_000_000} MB まで)")
+        ctype = resp.headers.get("content-type", "")
+        encoding = resp.encoding or "utf-8"
+    content = bytes(body)
     if "pdf" in ctype:
         import tempfile
 
         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as f:
-            f.write(resp.content)
+            f.write(content)
             f.flush()
             doc = load_pdf(Path(f.name))
         doc.source = url
         doc.kind = "url"
         return doc
+    page = content.decode(encoding, errors="replace")
     if "html" in ctype:
-        title, text = _html_to_text(resp.text)
+        title, text = _html_to_text(page)
     else:
-        title, text = "", resp.text
+        title, text = "", page
     return Loaded(title=title or url, source=url, text=text, kind="url")
