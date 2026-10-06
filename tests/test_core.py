@@ -125,3 +125,14 @@ def test_title_heading_is_not_repeated(store, tmp_path):
     md = document_markdown(store, doc_id)
     assert md.count("硬化性組成物") == 2   # 前書きの title: と、本文の先頭の # 題名だけ
     assert "## 要約" in md
+
+
+def test_patent_wording_in_terms():
+    from lexweft_lite.keywords import extract_terms
+
+    t = extract_terms(["前記ロボットアームは前記ワークを把持する。シートモールディングコンパウンドを用いる。"
+                       "(メタ)アクリレートと一般式(1)で表される化合物を含むステップ。当該装置。酸基及び水酸基を有する樹脂。"])
+    assert "ロボットアーム" in t and "前記ロボットアーム" not in t          # 「前記」を外して数える
+    assert "シートモールディングコンパウンド" in t                           # 長い語も途中で切らない
+    assert not {"メタ", "一般式", "ステップ"} & set(t)                       # 特許の決まり文句は数えない
+    assert "酸基" in t and "酸基及" not in t                                 # 「及び」の漢字を語に付けない

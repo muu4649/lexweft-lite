@@ -107,7 +107,7 @@ def migrate(conn: sqlite3.Connection) -> None:
 def signature(store: Store) -> str:
     """資料の集合が変わったか見るための印."""
     row = store.conn.execute("SELECT COUNT(*) AS n, COALESCE(SUM(id), 0) AS s, COALESCE(MAX(added_at), '') AS a FROM documents").fetchone()
-    return f"{row['n']}:{row['s']}:{row['a']}"
+    return f"{row['n']}:{row['s']}:{row['a']}:t{kw.TERMS_VERSION}"   # 語の数え方が変わったときも作り直す
 
 
 def status(store: Store) -> dict[str, Any]:

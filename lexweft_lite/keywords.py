@@ -15,7 +15,14 @@ from typing import Any, Iterable
 from .store import Store
 
 
-_TERM_RE = re.compile(r"[一-龥々〆ヵヶァ-ヴー]{2,14}|[A-Za-z][A-Za-z0-9\-]{2,30}")
+# 語の数え方を変えたら上げる (取り込み済みの資料も数え直し、意味層を作り直す)
+TERMS_VERSION = "3"
+# 長い語も途中で切らずに取り出し、長すぎるもの (20 文字を超える) は数えない
+_TERM_RE = re.compile(r"[一-龥々〆ヵヶァ-ヴー]{2,}|[A-Za-z][A-Za-z0-9\-]{2,30}")
+_MAX_JA = 20
+# 特許の「前記ロボット」「当該装置」などは、頭の語を外して数える
+_PREFIXES = ("前記", "上記", "当該")
+_CONJ_RE = re.compile(r"及び|並びに|又は|若しくは|乃至")
 _STOP_JA = {
     "場合", "以下", "以上", "上記", "前記", "本発明", "発明", "実施", "実施形態", "本実施形態", "実施例", "形態", "一例", "例え", "参照", "記載",
     "図示", "説明", "構成", "方法", "可能", "必要", "特徴", "目的", "結果", "対象", "情報", "内容", "部分", "全体", "一方", "他方", "同様",
@@ -25,6 +32,9 @@ _STOP_JA = {
 _STOP_JA |= {
     "本開示", "前記第", "特許文献", "非特許文献", "特願", "特開", "特表", "公報", "出願", "出願人", "発明者", "明細書", "請求", "図面", "符号",
     "実施の形態", "変形例", "第一", "第二", "第三", "具備", "備え", "有する", "含む", "当該", "該当", "上述", "後述", "下記", "同図",
+    # 特許の決まり文句 (「(メタ)アクリレート」の「メタ」もここ)
+    "ステップ", "一般式", "一実施形態", "一実施", "本実施", "実施態様", "一態様", "態様", "メタ", "化学式", "構造式",
+    "製造方法", "構成要素", "複数種類",
 }
 _STOP_EN = {
     "the", "and", "for", "with", "from", "this", "that", "these", "those", "which", "were", "have", "has", "been", "also", "into", "such",
@@ -57,6 +67,8 @@ def extract_terms(texts: Iterable[str]) -> Counter:
     body = "\n".join(_prose(t) for t in texts)
     japanese = len(_JA_CHAR_RE.findall(body)) >= len(body) * 0.1
     counts: Counter = Counter()
+    # 「酸基及び」「A又はB」の「及」「又」などは語の切れ目にする (後ろが平仮名なので漢字だけが語に付いてしまう)
+    body = _CONJ_RE.sub(" ", body)
     for m in _TERM_RE.finditer(body):
         t = m.group(0)
         if t.isascii():
@@ -70,8 +82,13 @@ def extract_terms(texts: Iterable[str]) -> Counter:
                 t = t.lower()
                 if t in _STOP_EN or len(t) < 4:
                     continue
-        elif t in _STOP_JA or len(set(t)) == 1:
-            continue
+        else:
+            for pre in _PREFIXES:
+                if t.startswith(pre) and len(t) - len(pre) >= 2:
+                    t = t[len(pre):]
+                    break
+            if len(t) > _MAX_JA or t in _STOP_JA or len(set(t)) == 1:
+                continue
         counts[t] += 1
     return counts
 
@@ -93,7 +110,11 @@ def pending(store: Store) -> list[int]:
 
 
 def backfill(store: Store, limit: int | None = None) -> int:
-    """まだ語を数えていない資料を数える (前の版で取り込んだ資料のため)."""
+    """まだ語を数えていない資料を数える (前の版で取り込んだ資料や、語の数え方を変えたときのため)."""
+    if store.meta("terms_version") != TERMS_VERSION:
+        with store.tx() as c:
+            c.execute("DELETE FROM doc_terms_done")
+        store.set_meta("terms_version", TERMS_VERSION)
     ids = pending(store)
     if limit is not None:
         ids = ids[:limit]
