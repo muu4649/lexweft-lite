@@ -5,6 +5,7 @@
 --voice-dir: スライドごとの説明音声 slide<番号>.wav / .mp3 / .m4a / .aiff を重ねる (台本は narration.json)。
              読み上げがスライドより長ければ、そのスライドを延ばす (映像は最後のコマを止める)
 --music    : make_music.py で背景音楽を合成して重ねる (声が入っている間は音楽を下げる)
+--slides-out: ブログの図 (スライドを中身の高さに合わせて撮った PNG) を書き出す
 
 プレイ動画は架空の資料で撮ったもの (marketing/LeXWeftLite_プレイ動画.mp4) を使う。
 場面の時刻 (CLIPS) は、そのプレイ動画に合わせてある。台本を変えて撮り直したら、時刻も見直す。
@@ -48,7 +49,11 @@ PLAN: list[tuple[int, float | list[tuple[float, float]]]] = [
 ]
 
 
-async def _shoot(out_dir: Path, numbers: list[int]) -> None:
+FIGS = {2: "fig1_できること", 3: "fig2_3つの壁", 8: "fig3_Claudeのたどり方", 9: "fig4_読む量", 13: "fig5_ユースケース",
+        14: "fig6_接点を見つける例", 15: "fig7_取りこぼさない例", 10: "fig8_安心して使える"}
+
+
+async def _shoot(out_dir: Path, numbers: list[int], figs_out: Path | None = None) -> None:
     port = 9337
     proc = subprocess.Popen([CHROME, "--headless=new", f"--remote-debugging-port={port}", f"--user-data-dir={out_dir}/prof", "--hide-scrollbars",
                              "--no-first-run", "--force-color-profile=srgb", "about:blank"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -87,6 +92,14 @@ async def _shoot(out_dir: Path, numbers: list[int]) -> None:
                 await asyncio.sleep(0.5)
                 shot = await send("Page.captureScreenshot", format="png")
                 (out_dir / f"slide{s:02d}.png").write_bytes(base64.b64decode(shot["data"]))
+            if figs_out:   # ブログの図: 中身の高さに合わせて撮る
+                figs_out.mkdir(parents=True, exist_ok=True)
+                for s, name in FIGS.items():
+                    r = await send("Runtime.evaluate", expression=f"fig({s})", returnByValue=True)
+                    h = int(r["result"]["value"])
+                    await asyncio.sleep(0.4)
+                    shot = await send("Page.captureScreenshot", format="png", clip={"x": 0, "y": 0, "width": W, "height": h, "scale": 1})
+                    (figs_out / f"{name}.png").write_bytes(base64.b64decode(shot["data"]))
     finally:
         proc.terminate()
 
@@ -123,11 +136,12 @@ def main() -> int:
     ap.add_argument("out")
     ap.add_argument("--voice-dir")
     ap.add_argument("--music", action="store_true")
+    ap.add_argument("--slides-out", help="ブログの図 (スライドを中身の高さに合わせて撮った PNG) をこのフォルダに書き出す")
     args = ap.parse_args()
     video, out = Path(args.video).resolve(), Path(args.out).resolve()
     voice_dir = Path(args.voice_dir).resolve() if args.voice_dir else None
     work = Path(tempfile.mkdtemp(prefix="lw-intro-"))
-    asyncio.run(_shoot(work, [s for s, _ in PLAN]))
+    asyncio.run(_shoot(work, [s for s, _ in PLAN], Path(args.slides_out) if args.slides_out else None))
     enc = ["-c:v", "libx264", "-preset", "slow", "-crf", "20", "-r", "30", "-pix_fmt", "yuv420p"]
     parts, durs, voices = [], [], []
     for i, (s, what) in enumerate(PLAN):

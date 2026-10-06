@@ -11,7 +11,11 @@
                font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif; }
   section { display: none; width: 1920px; height: 1080px; position: relative; padding: 90px 140px; }
   section.on { display: block; }
-  section:not(.on) { display: none !important; }   /* .center (display: flex) より強く隠す */
+  section:not(.on) { display: none !important; }
+  /* ブログの図用: 中身の高さに合わせる (build_intro.py --slides-out が使う) */
+  body.fig, body.fig html { height: auto; }
+  body.fig section { height: auto; padding: 64px 100px 70px; }
+  body.fig .note { position: static; margin-top: 44px; }   /* .center (display: flex) より強く隠す */
   section.dark { background: var(--dark); color: #fff; }
   .kicker { font-size: 30px; letter-spacing: .12em; color: var(--accent2); font-weight: 600; }
   h1 { font-size: 112px; font-weight: 800; letter-spacing: .01em; }
@@ -65,7 +69,7 @@
   .uc .card .who { font-size: 28px; color: var(--accent); font-weight: 700; letter-spacing: .04em; }
   .uc .card p { font-size: 29px; }
   .uc .card .got { color: var(--ink); font-weight: 600; }
-  .bridge { display: grid; grid-template-columns: 1fr 260px 1fr; align-items: center; margin-top: 60px; }
+  .bridge { display: grid; grid-template-columns: 1fr 380px 1fr; align-items: center; margin-top: 60px; }
   .side { background: #fff; border-radius: 22px; padding: 36px 40px; border: 3px solid; }
   .side.a { border-color: #c2410c; } .side.b { border-color: #0e7490; }
   .side .g { font-size: 28px; font-weight: 700; } .side.a .g { color: #c2410c; } .side.b .g { color: #0e7490; }
@@ -73,6 +77,7 @@
   .link { text-align: center; }
   .link .line { height: 12px; background: linear-gradient(90deg, #c2410c, #0e7490); border-radius: 6px; margin: 0 10px; }
   .link .w { font-size: 28px; color: var(--muted); margin-top: 16px; line-height: 1.5; }
+  .link .w b { font-size: 34px; }
   .got3 { display: flex; gap: 26px; margin-top: 50px; }
   .got3 div { flex: 1; background: #e6f2f5; border-radius: 16px; padding: 26px 30px; font-size: 32px; font-weight: 600; color: #0b4d5f; }
   .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 60px; }
@@ -82,6 +87,31 @@
   .ba .big small { font-size: 48px; color: var(--muted); }
   .ba .after { border: 4px solid var(--accent); } .ba .after .big { color: var(--accent); }
   .ba p { font-size: 30px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+
+  /* ---- 色 (項目ごとに分ける) ---- */
+  .c1 { --c: #0e7490; --t: #e3f3f7; } .c2 { --c: #d9603f; --t: #fdeee8; } .c3 { --c: #059669; --t: #e2f6ee; }
+  .c4 { --c: #4f46e5; --t: #ecebfd; } .c5 { --c: #b7791f; --t: #fcf3dc; }
+  section:not(.dark) { background: linear-gradient(135deg, #f7f7f5 0%, #eef5f7 100%); }
+  section.dark { background: linear-gradient(135deg, #0f1a1e 0%, #0b3b4a 60%, #0e5566 100%); }
+  section.dark .kicker { color: #f2cc8f; }
+  .card[class*=" c"] { background: var(--t); border: 0; border-top: 10px solid var(--c); }
+  .card[class*=" c"] .no { background: var(--c); }
+  .card[class*=" c"] .who { color: var(--c); }
+  .card[class*=" c"] b { color: #1f2328; }
+  .wall[class*=" c"] { background: var(--t); border-left-color: var(--c); }
+  .wall[class*=" c"] b { color: var(--c); }
+  .clip .head[class*=" c"] { background: linear-gradient(90deg, var(--t) 0%, #fff 70%); border-bottom: 6px solid var(--c); }
+  .clip .head[class*=" c"] .no { background: var(--c); }
+  .step[class*=" c"] { border-color: var(--c); background: var(--t); }
+  .step[class*=" c"] b { color: var(--c); }
+  .arrow { color: #94a3b8; }
+  .num.gray .v { color: #9ca3af; }
+  .num.teal .v { color: #0e7490; }
+  .num.big .v { background: linear-gradient(90deg, #0e7490, #059669); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .ba .before { background: #fdeee8; border: 4px solid #d9603f; } .ba .before .big { color: #d9603f; }
+  .ba .after { background: #e2f6ee; border: 4px solid #059669; } .ba .after .big { color: #059669; }
+  ul.check li:nth-child(1)::before { color: #0e7490; } ul.check li:nth-child(2)::before { color: #059669; } ul.check li:nth-child(3)::before { color: #d9603f; }
+  .got3 div:nth-child(1) { background: #e3f3f7; color: #0b4d5f; } .got3 div:nth-child(2) { background: #e2f6ee; color: #065f46; } .got3 div:nth-child(3) { background: #fcf3dc; color: #7c4a03; }
 </style>
 </head>
 <body>
@@ -96,10 +126,10 @@
   <div class="kicker">何ができる？</div>
   <h2 style="margin-top:14px">資料を入れるだけ。AI が読む量は約 1/170。</h2>
   <div class="grid4">
-    <div class="card"><span class="no">1</span><b>資料を入れるだけで「地図」に</b><p>中身の似た資料をまとめ、何の集まりかを名前で示す</p></div>
-    <div class="card"><span class="no">2</span><b>グループどうしの関わりが見える</b><p>サブフォルダ（例: 自社のメモ / 他社の資料）の重なりを図に</p></div>
-    <div class="card"><span class="no">3</span><b>Claude が地図をたどって読む</b><p>必要な段落だけを読み、根拠の段落番号つきで答える</p></div>
-    <div class="card"><span class="no">4</span><b>AI が読む量は約 170 分の 1</b><p>資料は PC の中のまま。API キーは要りません</p></div>
+    <div class="card c1"><span class="no">1</span><b>資料を入れるだけで「地図」に</b><p>中身の似た資料をまとめ、何の集まりかを名前で示す</p></div>
+    <div class="card c2"><span class="no">2</span><b>グループどうしの関わりが見える</b><p>サブフォルダ（例: 自社のメモ / 他社の資料）の重なりを図に</p></div>
+    <div class="card c3"><span class="no">3</span><b>Claude が地図をたどって読む</b><p>必要な段落だけを読み、根拠の段落番号つきで答える</p></div>
+    <div class="card c4"><span class="no">4</span><b>AI が読む量は約 170 分の 1</b><p>資料は PC の中のまま。API キーは要りません</p></div>
   </div>
 </section>
 
@@ -107,41 +137,41 @@
   <div class="kicker">こんなことで困っていませんか</div>
   <h2 style="margin-top:14px">資料が増えると、AI に「全部渡す」のは難しい</h2>
   <div class="walls">
-    <div class="wall"><b>量の壁</b><p>一度に読める量には上限がある。特許 500 件は約 195 万字</p></div>
-    <div class="wall"><b>お金と時間の壁</b><p>料金や利用の上限は、読ませた量で決まる。多いほど遅く、高い</p></div>
-    <div class="wall"><b>取りこぼしの壁</b><p>キーワードで絞ると、言い方が違う資料（熱暴走 / 延焼 …）を落とす</p></div>
+    <div class="wall c2"><b>量の壁</b><p>一度に読める量には上限がある。特許 500 件は約 195 万字</p></div>
+    <div class="wall c5"><b>お金と時間の壁</b><p>料金や利用の上限は、読ませた量で決まる。多いほど遅く、高い</p></div>
+    <div class="wall c4"><b>取りこぼしの壁</b><p>キーワードで絞ると、言い方が違う資料（熱暴走 / 延焼 …）を落とす</p></div>
   </div>
 </section>
 
 <section class="clip" data-s="4">
-  <div class="head"><div class="no">1</div><b>フォルダを決めて、入れるだけ</b><span>画面に落とす・Finder で入れる → 自動で取り込み、意味層ができる</span></div>
+  <div class="head c1"><div class="no">1</div><b>フォルダを決めて、入れるだけ</b><span>画面に落とす・Finder で入れる → 自動で取り込み、意味層ができる</span></div>
   <div class="frame"></div>
 </section>
 
 <section class="clip" data-s="5">
-  <div class="head"><div class="no">1</div><b>中身ごとに「地図」になる</b><span>似た資料をまとまりに分け、何の集まりかを名前で示す</span></div>
+  <div class="head c1"><div class="no">1</div><b>中身ごとに「地図」になる</b><span>似た資料をまとまりに分け、何の集まりかを名前で示す</span></div>
   <div class="frame"></div>
 </section>
 
 <section class="clip" data-s="6">
-  <div class="head"><div class="no">2</div><b>グループどうしの関わりが見える</b><span>サブフォルダがグループに。近い資料の組を線で結ぶ</span></div>
+  <div class="head c2"><div class="no">2</div><b>グループどうしの関わりが見える</b><span>サブフォルダがグループに。近い資料の組を線で結ぶ</span></div>
   <div class="frame"></div>
 </section>
 
 <section class="clip" data-s="7">
-  <div class="head"><div class="no">3</div><b>意味層でたどる検索</b><span>言い方が違う資料にも届き、読み残しも理由つきで示す</span></div>
+  <div class="head c3"><div class="no">3</div><b>意味層でたどる検索</b><span>言い方が違う資料にも届き、読み残しも理由つきで示す</span></div>
   <div class="frame"></div>
 </section>
 
 <section data-s="8">
   <div class="kicker">3 ・ Claude とつなぐ（MCP）</div>
-  <h2 style="margin-top:14px">Claude は「地図 → まとまり → 段落」の順にたどる</h2>
+  <h2 style="margin-top:14px">Claude は「地図 → まとまり → 段落」とたどる</h2>
   <div class="flow">
-    <div class="step"><b>地図を見る</b><p>どんなまとまりがあるか</p></div><div class="arrow">→</div>
-    <div class="step"><b>まとまりを選ぶ</b><p>質問に関係する所だけ</p></div><div class="arrow">→</div>
-    <div class="step"><b>段落を読む</b><p>全文ではなく必要な所</p></div><div class="arrow">→</div>
-    <div class="step"><b>読み残しを確かめる</b><p>関係が強いのに未読の資料</p></div><div class="arrow">→</div>
-    <div class="step"><b>根拠つきで答える</b><p>段落番号で元に戻れる</p></div>
+    <div class="step c1"><b>地図を見る</b><p>どんなまとまりがあるか</p></div><div class="arrow">→</div>
+    <div class="step c4"><b>まとまりを選ぶ</b><p>質問に関係する所だけ</p></div><div class="arrow">→</div>
+    <div class="step c3"><b>段落を読む</b><p>全文ではなく必要な所</p></div><div class="arrow">→</div>
+    <div class="step c5"><b>読み残しを確かめる</b><p>関係が強いのに未読の資料</p></div><div class="arrow">→</div>
+    <div class="step c2"><b>根拠つきで答える</b><p>段落番号で元に戻れる</p></div>
   </div>
   <div class="note">人が分厚い本を読むときに、まず目次を見て、必要な章だけを開くのと同じです。</div>
 </section>
@@ -150,9 +180,9 @@
   <div class="kicker">4 ・ どれくらい効率がいい？</div>
   <h2 style="margin-top:14px">実際の特許 500 件で、Claude が読んだ量</h2>
   <div class="nums">
-    <div class="num"><div class="v">約 195 万字</div><div class="l">全部を渡す</div></div>
+    <div class="num gray"><div class="v">約 195 万字</div><div class="l">全部を渡す</div></div>
     <div class="vs">→</div>
-    <div class="num"><div class="v">約 1.1 万字</div><div class="l">意味層でたどる（道具 2 回）</div></div>
+    <div class="num teal"><div class="v">約 1.1 万字</div><div class="l">意味層でたどる（道具 2 回）</div></div>
     <div class="num big"><div class="v">1/170</div><div class="l">読む量</div></div>
   </div>
   <div class="note">読む量は資料の数によらずほぼ一定なので、資料が多いほど効きます。数字は Claude が受け取った文字数（トークン数とは少し違う）。特許では届いた資料の良し悪しは未測定。架空の資料では、キーワード検索 4〜10 件に対し、たどると同じ話題の 15 件中 10〜15 件に届きました。</div>
@@ -192,16 +222,16 @@
   <div class="kicker">ユースケース</div>
   <h2 style="margin-top:14px">こんな場面で使えます</h2>
   <div class="uc">
-    <div class="card"><div class="who">知財・特許調査</div><b>自社と他社の特許の重なりと空白</b><p>自社 / 他社でサブフォルダを分けて入れる → <span class="got">どこで重なり、どこが手薄かが図で分かる</span></p></div>
-    <div class="card"><div class="who">研究開発の文献調査</div><b>言い方が違う関連研究も逃さない</b><p>論文・報告書を入れる → <span class="got">Claude が読み残しを確かめ、根拠の段落つきで答える</span></p></div>
-    <div class="card"><div class="who">社内の報告書・議事録</div><b>たまった資料の全体を一目で</b><p>フォルダに入れていくだけ → <span class="got">何がどれだけあるかが地図で分かり、質問もできる</span></p></div>
-    <div class="card"><div class="who">用途探索・新規事業</div><b>異なる分野の資料の接点を探す</b><p>分野ごとにサブフォルダで入れる → <span class="got">技術が生かせそうな組み合わせが線で見える</span></p></div>
+    <div class="card c1"><div class="who">知財・特許調査</div><b>自社と他社の特許の重なりと空白</b><p>自社 / 他社でサブフォルダを分けて入れる → <span class="got">どこで重なり、どこが手薄かが図で分かる</span></p></div>
+    <div class="card c3"><div class="who">研究開発の文献調査</div><b>言い方が違う関連研究も逃さない</b><p>論文・報告書を入れる → <span class="got">Claude が読み残しを確かめ、根拠の段落つきで答える</span></p></div>
+    <div class="card c5"><div class="who">社内の報告書・議事録</div><b>たまった資料の全体を一目で</b><p>フォルダに入れていくだけ → <span class="got">何がどれだけあるかが地図で分かり、質問もできる</span></p></div>
+    <div class="card c2"><div class="who">用途探索・新規事業</div><b>異なる分野の資料の接点を探す</b><p>分野ごとにサブフォルダで入れる → <span class="got">技術が生かせそうな組み合わせが線で見える</span></p></div>
   </div>
 </section>
 
 <section data-s="14">
   <div class="kicker">ユースケース ・ 用途探索（実際に試した例）</div>
-  <h2 style="margin-top:14px">素材の特許 300 件 × ロボットの特許 200 件を入れると</h2>
+  <h2 style="margin-top:14px">素材の特許 300 件 × ロボットの特許 200 件</h2>
   <div class="bridge">
     <div class="side a"><div class="g">グループ: 素材の特許</div><b>材料の性質を予測・探索する特許</b></div>
     <div class="link"><div class="line"></div><div class="w">共通の言葉<br><b style="color:#1f2328">説明変数・潜在変数<br>学習済みモデル</b></div></div>
@@ -215,7 +245,7 @@
   <div class="kicker">ユースケース ・ 調査（架空の資料で確かめた例）</div>
   <h2 style="margin-top:14px">言い方が違う資料も、取りこぼさない</h2>
   <div class="ba">
-    <div><div class="t">キーワード「熱暴走」で探す</div><div class="big">4<small> / 15 件</small></div><p>「延焼」「類焼」「熱連鎖」と書いた資料には届かない</p></div>
+    <div class="before"><div class="t">キーワード「熱暴走」で探す</div><div class="big">4<small> / 15 件</small></div><p>「延焼」「類焼」「熱連鎖」と書いた資料には届かない</p></div>
     <div class="after"><div class="t">意味層でたどる + 読み残しの確認</div><div class="big">15<small> / 15 件</small></div><p>道具 2 回。言い方が違っても、同じ話題の資料に届く</p></div>
   </div>
   <div class="note">同じ話題の資料 15 件を、わざと言い方を変えて書いた架空の資料での結果です（4 つの話題で、キーワード 4〜10 件 → たどると 10〜15 件）。</div>
@@ -223,6 +253,8 @@
 
 <script>
   // 1 枚だけ表示する (build_intro.py が show(番号) を呼んで写真にする。?s=番号 で開いても見られる)
+  // fig(n): ブログの図用に、中身の高さに合わせて表示し、その高さを返す
+  window.fig = n => { document.body.classList.add('fig'); show(n); return Math.ceil(document.querySelector('section.on').getBoundingClientRect().height); };
   window.show = n => {
     document.querySelectorAll('section').forEach(x => x.classList.toggle('on', x.dataset.s === String(n)));
     return document.querySelector('section.on')?.dataset.s;
