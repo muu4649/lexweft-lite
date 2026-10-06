@@ -171,6 +171,8 @@
   box.scrollIntoView({behavior: 'smooth', block: 'start'}); await sleep(1200);
   await moveTo(box); await sleep(3600);
   window.scrollTo({top: 0, behavior: 'smooth'}); await sleep(600);
+  await caption('Claude がたどるときに読む量は、資料が増えてもほぼ一定です', '実際の特許 500 件（約 195 万字）でも、道具 2 回・約 1.1 万字。全部を読ませる場合の約 170 分の 1');
+  await sleep(5200);
 
   // 6. Claude で深める (Claude が書き込む様子の再現)
   await caption('⑤ Claude とつなぐ: セットアップの最後に y を押すだけ', 'あとは Claude Desktop を開き直します（Mac は ⌘Q で終了してから開く）');
@@ -202,6 +204,6 @@
 
   // おわり
   cap.style.opacity = 0;
-  await title('LeXWeft Lite', '溜めた資料が、地図になる', '資料はこの PC の中に。API キーは不要です。', 3800);
+  await title('LeXWeft Lite', '溜めた資料が、地図になる', 'AI が読む量は約 170 分の 1。資料はこの PC の中に、API キーは不要です。', 4200);
   return 'done';
 })();

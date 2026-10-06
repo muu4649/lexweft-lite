@@ -95,6 +95,13 @@ def main() -> int:
     ingest(s, row["path"], s.markdown_dir)
     cl.build(s)
     id_of = {Path(d["source"]).name: d["id"] for d in s.list_documents()}
+    import json
+
+    from lexweft_lite.markdown import document_markdown
+
+    size = lambda obj: len(json.dumps(obj, ensure_ascii=False, separators=(",", ":")))
+    total = sum(len(document_markdown(s, d["id"])) for d in s.list_documents())
+    cost = []   # Claude が読む量 (道具の結果の文字数)
     rows = []
     for theme, t in THEMES.items():
         relevant = {id_of[f] for f in files[theme]}
@@ -109,7 +116,8 @@ def main() -> int:
             docs = set(docs)
             return f"{len(docs & relevant)}/{len(docs)}" if docs else "-"
 
-        a = {h["document_id"] for h in search(s, [t["alt"][0].split()[0]], top_k=10)}
+        a_out = search(s, [t["alt"][0].split()[0]], top_k=10)
+        a = {h["document_id"] for h in a_out}
         b = {h["document_id"] for h in search(s, [t["alt"][0].split()[0], *t["alt"]], top_k=10)}
         r = nav.route(lib, t["q"], max_documents=8)
         c = {d["document_id"] for d in r["documents"]}
@@ -117,6 +125,7 @@ def main() -> int:
             nav.mark_read(d)
         u = nav.unread(lib, t["q"], limit=10)
         d_ = c | {x["document_id"] for x in u["unread"]}
+        cost.append((theme, size(a_out), recall(a), size(r) + size(u), recall(d_)))
         e_ = c | {x["document_id"] for x in nav.expand(lib, sorted(c), t["q"], limit=10)["documents"]}
         rows.append((theme, t["q"], recall(a), recall(b), recall(c), recall(d_), recall(e_), prec(a), prec(c), prec(d_), prec(e_)))
     lines = ["# 意味層をたどったときの到達 (架空の資料 60 件)", "",
@@ -126,6 +135,9 @@ def main() -> int:
     lines += [f"| {r[0]} | {r[1]} | {r[2]} | {r[3]} | {r[4]} | {r[5]} | {r[6]} |" for r in rows]
     lines += ["", "## 出てきた資料のうち、同じ話題だったもの", "", "| 話題 | A | C | D | E |", "|---|---|---|---|---|"]
     lines += [f"| {r[0]} | {r[7]} | {r[8]} | {r[9]} | {r[10]} |" for r in rows]
+    lines += ["", f"## Claude が読む量（全部を渡すと {total:,} 文字）", "",
+              "| 話題 | A 文字の一致 | 届いた資料 | D 道案内 + 読み残し（道具 2 回） | 届いた資料 |", "|---|---|---|---|---|"]
+    lines += [f"| {c[0]} | {c[1]:,} 字 | {c[2]} | {c[3]:,} 字（全体の {100 * c[3] / total:.0f}%） | {c[4]} |" for c in cost]
     lines += ["", "- A: lw_search に質問の最初の語を 1 つ（上位 10 段落）", "- B: A + Claude が足しそうな言い換え 2 つ", "- C: lw_route(質問) の上位 8 件",
               "- D: C の 8 件を読んだことにして lw_unread（10 件）", "- E: C の 8 件から lw_expand（10 件）",
               "", "注意: 架空の資料で、言い方の違いを人工的に作っている。実際の資料での効果は別に確かめる必要がある。"]
