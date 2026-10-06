@@ -8,6 +8,13 @@ CMD="$1"
 OUT="$2"
 [ -x "$CMD" ] || { echo "lexweft が見つかりません: $CMD" >&2; exit 1; }
 VER="$("$CMD" --version)"
+# 元のコードと起動するコマンドが前と同じなら、作り直さない。
+# 作り直すと署名が変わり、macOS が別のアプリとみなして「書類フォルダへのアクセス」などの許可をまた求めるため
+STAMP="$(cat "$HERE/App.swift" "$HERE/icon.icns" | shasum -a 256 | cut -d' ' -f1)-$(printf %s "$CMD" | shasum -a 256 | cut -c1-16)"
+if [ -f "$OUT/Contents/Resources/build-stamp" ] && [ "$(cat "$OUT/Contents/Resources/build-stamp")" = "$STAMP" ]; then
+  echo "Mac アプリは前のままで使えます: $OUT"
+  exit 0
+fi
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
@@ -17,6 +24,7 @@ rm -rf "$OUT"
 mkdir -p "$OUT/Contents/MacOS" "$OUT/Contents/Resources"
 cp "$TMP/LeXWeftLite" "$OUT/Contents/MacOS/LeXWeftLite"
 cp "$HERE/icon.icns" "$OUT/Contents/Resources/icon.icns"
+printf %s "$STAMP" > "$OUT/Contents/Resources/build-stamp"
 PLIST="$OUT/Contents/Info.plist"
 cat > "$PLIST" <<'XML'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -44,4 +52,4 @@ plutil -replace CFBundleVersion -string "$VER" "$PLIST"
 plutil -replace LWLiteCommand -string "$CMD" "$PLIST"
 plutil -lint -s "$PLIST"
 codesign --force --sign - "$OUT" >/dev/null 2>&1 || true
-echo "作りました: $OUT ($VER)"
+echo "作りました: $OUT ($VER の時点で作成。中身の版が上がっても、アプリの殻は作り直さない)"
