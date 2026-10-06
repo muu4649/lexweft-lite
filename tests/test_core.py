@@ -113,3 +113,15 @@ def test_csv_loader(tmp_path, store):
     [r] = ingest(store, str(p))
     assert r.paragraphs == 2
     assert search(store, ["アルミ"])
+
+
+def test_title_heading_is_not_repeated(store, tmp_path):
+    from lexweft_lite.ingest import ingest
+    from lexweft_lite.markdown import document_markdown
+
+    f = tmp_path / "doc.md"
+    f.write_text("# 硬化性組成物\n\n- 番号: 特許1\n\n## 要約\n\n低誘電正接の硬化物を得る。\n", encoding="utf-8")
+    doc_id = ingest(store, str(f))[0].document_id
+    md = document_markdown(store, doc_id)
+    assert md.count("硬化性組成物") == 2   # 前書きの title: と、本文の先頭の # 題名だけ
+    assert "## 要約" in md

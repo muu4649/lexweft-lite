@@ -295,21 +295,27 @@ class Store:
                      paragraphs: list[tuple[str, str]]) -> int:
         """資料と段落 (見出し, 本文) を保存し、資料 ID を返す.
 
-        同じ出所の資料があれば置き換える。そのとき、本文が変わっていない段落に付いていた根拠と関係は新しい段落に付け直す。
+        同じ出所の資料があれば、資料の番号はそのままで中身を置き換える (まとまりの番号や読んだ記録が引き継がれるように)。
+        そのとき、本文が変わっていない段落に付いていた根拠と関係は新しい段落に付け直す。
         """
         source = self._src_in(source)
+        meta_json = json.dumps(meta, ensure_ascii=False, default=str)
         with self.tx() as c:
             old = c.execute("SELECT id FROM documents WHERE source = ?", (source,)).fetchone()
             carry_ev: list[sqlite3.Row] = []
             carry_rel: list[sqlite3.Row] = []
             if old is not None:
+                doc_id = int(old["id"])
                 carry_ev = c.execute("SELECT e.concept_id, e.note, e.created_at, p.text FROM evidence e JOIN paragraphs p ON p.id = e.paragraph_id"
-                                     " WHERE p.document_id = ?", (old["id"],)).fetchall()
+                                     " WHERE p.document_id = ?", (doc_id,)).fetchall()
                 carry_rel = c.execute("SELECT r.id, p.text FROM relations r JOIN paragraphs p ON p.id = r.paragraph_id WHERE p.document_id = ?",
-                                      (old["id"],)).fetchall()
-                c.execute("DELETE FROM documents WHERE id = ?", (old["id"],))
-            doc_id = c.execute("INSERT INTO documents(title, source, kind, sha256, meta, added_at) VALUES (?, ?, ?, ?, ?, ?)",
-                               (title, source, kind, sha256, json.dumps(meta, ensure_ascii=False, default=str), now_iso())).lastrowid
+                                      (doc_id,)).fetchall()
+                c.execute("DELETE FROM paragraphs WHERE document_id = ?", (doc_id,))
+                c.execute("UPDATE documents SET title = ?, kind = ?, sha256 = ?, meta = ?, added_at = ? WHERE id = ?",
+                          (title, kind, sha256, meta_json, now_iso(), doc_id))
+            else:
+                doc_id = c.execute("INSERT INTO documents(title, source, kind, sha256, meta, added_at) VALUES (?, ?, ?, ?, ?, ?)",
+                                   (title, source, kind, sha256, meta_json, now_iso())).lastrowid
             by_text: dict[str, int] = {}
             for i, (head, body) in enumerate(paragraphs):
                 pid = c.execute("INSERT INTO paragraphs(document_id, ordinal, heading, text) VALUES (?, ?, ?, ?)", (doc_id, i, head, body)).lastrowid

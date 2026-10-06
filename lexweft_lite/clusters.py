@@ -237,18 +237,25 @@ def build(store: Store) -> dict[str, Any]:
     prev = {int(r["document_id"]): int(r["cluster_id"]) for r in store.conn.execute(
         "SELECT document_id, cluster_id FROM ldoc_clusters WHERE scope = ?", (KEY,))}
     prev_labels = {int(r["id"]): r["label"] for r in store.conn.execute("SELECT id, label FROM lclusters WHERE scope = ?", (KEY,))}
-    prev_row = store.conn.execute("SELECT version FROM lscopes WHERE scope = ?", (KEY,)).fetchone()
+    prev_row = store.conn.execute("SELECT version, built_at FROM lscopes WHERE scope = ?", (KEY,)).fetchone()
     version = (int(prev_row["version"]) if prev_row else 0) + 1
     doc_ids, terms, counts = _matrix(store)
     n = len(doc_ids)
-    changes = {"added_documents": len(set(doc_ids) - set(prev)), "removed_documents": len(set(prev) - set(doc_ids))}
+    # 前の版にもあって、そのあと取り込み直した資料 (番号はそのままで中身が変わったもの)
+    updated = 0
+    if prev_row and prev_row["built_at"]:
+        kept = set(doc_ids) & set(prev)
+        updated = sum(1 for r in store.conn.execute("SELECT id FROM documents WHERE added_at > ?", (prev_row["built_at"],)) if int(r["id"]) in kept)
+    changes = {"added_documents": len(set(doc_ids) - set(prev)), "updated_documents": updated,
+               "removed_documents": len(set(prev) - set(doc_ids))}
     if n == 0 or not terms:
         _replace(store, sig, n, 0, "none", t0, version, changes, [], [], [])
         return status(store)
     tf = TfidfTransformer(sublinear_tf=True).fit(counts)
     tfidf = tf.transform(counts)
-    # 次元は資料数よりずっと小さくする (資料数に近いと圧縮が効かず、言い換えどうしが近づかない)
-    dims = max(1, min(100, len(terms) - 1, n - 1, max(2, n // 4)))
+    # 次元は資料数よりずっと小さくする (資料数に近いと圧縮が効かず、言い換えどうしが近づかない)。
+    # ただし 8 より小さいと、関係の薄い段落まで「近い」と出るので、資料が少なくても 8 は取る
+    dims = max(1, min(100, len(terms) - 1, n - 1, max(8, n // 4)))
     svd = None
     if dims >= 2:
         svd = TruncatedSVD(n_components=dims, random_state=0).fit(tfidf)

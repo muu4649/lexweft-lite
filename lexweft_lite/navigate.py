@@ -159,14 +159,17 @@ def overview(lib: Library, scope: str | None = None) -> dict[str, Any]:
 
 
 # ---------------- 道案内 ----------------
-def _rank(store: Store, m: dict[str, Any], question: str, top: int = 300) -> tuple[dict[int, float], dict[int, list[str]], dict[int, float], np.ndarray | None]:
-    """段落ごとの点 (意味の近さと文字の一致の RRF)、理由、意味の近さ."""
+def _rank(store: Store, m: dict[str, Any], question: str, top: int = 300) -> tuple[dict[int, float], dict[int, list[str]], dict[int, float], np.ndarray | None, float]:
+    """段落ごとの点 (意味の近さと文字の一致の RRF)、理由、意味の近さ、目立って近いと言える近さ."""
+    floor = 0.05
     scores: dict[int, float] = {}
     why: dict[int, list[str]] = {}
     sem: dict[int, float] = {}
     q = _qvec(m, question)
     if q is not None and len(m["pids"]):
         sims = m["pvecs"] @ q
+        # 資料が少ないと次元も少なく、どの段落も質問に「近い」と出る。全段落の中で目立って近いかの基準も求めておく
+        floor = max(0.05, float(sims.mean() + sims.std())) if len(sims) >= 10 else 0.05
         order = np.argsort(-sims)[:top]
         for rank, i in enumerate(order):
             if sims[i] <= 0.05:
@@ -179,12 +182,12 @@ def _rank(store: Store, m: dict[str, Any], question: str, top: int = 300) -> tup
         for rank, pid in enumerate(rank_one(store, qq, limit=top)):
             scores[pid] = scores.get(pid, 0.0) + 1.0 / (RRF_K + rank + 1)
             why.setdefault(pid, []).append(f"文字が一致「{qq}」")
-    return scores, why, sem, q
+    return scores, why, sem, q, floor
 
 
 def _documents(store: Store, m: dict[str, Any], question: str) -> tuple[list[dict[str, Any]], dict[int, list[str]], np.ndarray | None]:
     """保存先の中で、質問に関係する資料を順に (資料の点・いちばん良い段落・フォルダをまたいで比べるための強さ)."""
-    scores, why, sem, q = _rank(store, m, question)
+    scores, why, sem, q, floor = _rank(store, m, question)
     pdoc = {int(p): int(d) for p, d in zip(m["pids"], m["dids"])}
     for pid in scores:
         if pid not in pdoc:   # 意味層を作ったあとに増えた段落 (文字の一致だけで見つかったもの)
@@ -201,7 +204,8 @@ def _documents(store: Store, m: dict[str, Any], question: str) -> tuple[list[dic
         score = v[0][0] + 0.3 * sum(s for s, _ in v[1:3])
         best_sem = max((sem.get(pid, 0.0) for _, pid in v), default=0.0)
         text_hit = any(w.startswith("文字") for _, pid in v for w in why.get(pid, []))
-        out.append({"document_id": d, "score": score, "strength": best_sem + (0.15 if text_hit else 0.0), "paragraphs": [pid for _, pid in v]})
+        out.append({"document_id": d, "score": score, "strength": best_sem + (0.15 if text_hit else 0.0), "paragraphs": [pid for _, pid in v],
+                    "text_hit": text_hit, "stands_out": best_sem > floor})
     out.sort(key=lambda x: -x["score"])
     return out, why, q
 
@@ -324,6 +328,9 @@ def unread(lib: Library, question: str | None = None, read_document_ids: list[in
         read_clusters = {m["cluster_of"].get(d) for d in read}
         for rank, d in enumerate(docs):
             if d["document_id"] in read:
+                continue
+            # 意味の近さだけが理由の資料は、ほかの段落より目立って近いか、読んだ資料と同じまとまりのときだけ挙げる
+            if not (d["text_hit"] or d["stands_out"] or m["cluster_of"].get(d["document_id"]) in read_clusters):
                 continue
             pool.append((d["strength"], -rank, st, m, d, why, read_clusters))
     many = len({p[2].path for p in pool}) > 1

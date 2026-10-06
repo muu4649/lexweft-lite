@@ -75,3 +75,25 @@ def test_scopes_api(home, tmp_path):
     assert g["documents"] == 7 and any(n.get("cluster") is not None for n in g["nodes"])
     srcs = c.get("/api/sources").json()
     assert srcs[0]["documents"] == 7 and srcs[0]["changed"] is False
+
+
+def test_updated_files_keep_document_and_cluster_ids(home, tmp_path):
+    import time
+
+    from lexweft_lite.ingest import ingest
+
+    folder = make_folder(tmp_path, "mix", BATTERY + ROBOT)
+    st = register_and_import(folder)
+    ids_before = {d["source"]: d["id"] for d in st.list_documents()}
+    clusters_before = {c["id"] for c in cl.clusters(st)}
+    time.sleep(1.1)   # 時刻は秒単位なので、前の版より後に取り込んだと分かるように
+    for f in sorted(folder.glob("*.md")):   # すべてのファイルの書き方だけを少し変える
+        f.write_text(f.read_text(encoding="utf-8") + "\n\n(図は省いた)\n", encoding="utf-8")
+    res = ingest(st, str(folder), st.markdown_dir)
+    assert {r.status for r in res} == {"updated"}
+    assert {d["source"]: d["id"] for d in st.list_documents()} == ids_before   # 資料の番号は変わらない
+    assert len(list(st.markdown_dir.glob("*.md"))) == len(ids_before)       # 古い Markdown が残らない
+    cl.build(st)
+    ch = cl.status(st)["changes"]
+    assert ch["added_documents"] == 0 and ch["removed_documents"] == 0 and ch["updated_documents"] == len(ids_before)
+    assert {c["id"] for c in cl.clusters(st)} == clusters_before and ch["gone_clusters"] == [] and ch["new_clusters"] == []

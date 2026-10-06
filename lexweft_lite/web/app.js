@@ -177,6 +177,7 @@ function changesText(x) {
   const parts = [];
   if (c.added_documents) parts.push(`資料 +${num(c.added_documents)}`);
   if (c.removed_documents) parts.push(`資料 −${num(c.removed_documents)}`);
+  if (c.updated_documents) parts.push(`更新 ${num(c.updated_documents)}`);
   if ((c.new_clusters || []).length && x.version > 1) parts.push(`新しいまとまり ${c.new_clusters.length}`);
   return x.version > 1 && parts.length ? `版 ${x.version}（前回から ${parts.join('・')}）` : (x.version ? `版 ${x.version}` : '');
 }

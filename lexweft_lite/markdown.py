@@ -35,9 +35,12 @@ def document_markdown(store: Store, document_id: int, offset: int = 0, limit: in
     head += ["---", "", f"# {doc['title']}", ""]
     lines = head
     current = None
+    title = doc["title"].strip()
     for p in paras:
         heading = (p["heading"] or "").strip()
         body = p["text"]
+        if heading and heading != current and heading.lstrip("#").strip() == title:
+            current = heading   # 資料の題名と同じ見出し (ファイルの先頭の # 題名) は 2 度書かない
         if heading and heading != current:
             lines += [heading if heading.startswith("#") else f"## {heading}", ""]
             current = heading
