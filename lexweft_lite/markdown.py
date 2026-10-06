@@ -34,18 +34,24 @@ def document_markdown(store: Store, document_id: int, offset: int = 0, limit: in
         head.append(f"range: {offset + 1}-{offset + len(paras)}")
     head += ["---", "", f"# {doc['title']}", ""]
     lines = head
-    current = None
     title = doc["title"].strip()
+    # 見出しは節の表から、その節の最初の段落の前に書く (段落の本文には見出しが入っていない)
+    starts = {s["first_ordinal"]: s["heading"] for s in store.sections_of(document_id)}
+    if paras and not starts:   # 前の版で取り込んだまま (段落に見出しを持っていた) の資料
+        prev = None
+        for p in paras:
+            h = (p["heading"] or "").strip()
+            if h and h != prev:
+                starts[p["ordinal"]] = h
+            prev = h or prev
     for p in paras:
-        heading = (p["heading"] or "").strip()
-        body = p["text"]
-        if heading and heading != current and heading.lstrip("#").strip() == title:
-            current = heading   # 資料の題名と同じ見出し (ファイルの先頭の # 題名) は 2 度書かない
-        if heading and heading != current:
+        heading = (starts.get(p["ordinal"]) or "").strip()
+        if heading and heading.lstrip("#").strip() != title:   # 資料の題名と同じ見出し (ファイルの先頭の # 題名) は 2 度書かない
             lines += [heading if heading.startswith("#") else f"## {heading}", ""]
-            current = heading
-        if heading and body.startswith(heading):
-            body = body[len(heading):].lstrip("\n")
+        body = p["text"]
+        old = (p["heading"] or "").strip()
+        if old and body.startswith(old):   # 前の版の段落は、本文の先頭に見出しが付いている
+            body = body[len(old):].lstrip("\n")
         lines += [f"[¶{p['id']}] {body.strip()}", ""]
     return "\n".join(lines).rstrip() + "\n"
 

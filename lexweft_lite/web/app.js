@@ -376,10 +376,14 @@ function docDetailHtml() {
   if (!d) return `<div class="panel empty">左の一覧から資料を選ぶと、段落番号つきの本文が出ます。<br>意味層は「LLM と接続」から Claude などに書かせるか、段落を選んでここで書けます。</div>`;
   const byPara = {};
   d.concepts.forEach(c => c.paragraphs.forEach(p => (byPara[p] ||= []).push(c)));
-  let head = null;
+  // 見出しは節の表から、その節の最初の段落の前に出す (前の版で取り込んだ資料は、段落の見出しから)
+  const starts = {};
+  (d.sections || []).forEach(sc => { starts[sc.first_ordinal] = sc.heading; });
+  let prev = null;
+  if (!(d.sections || []).length) d.paragraphs.forEach(p => { if (p.heading && p.heading !== prev) starts[p.ordinal] = p.heading; prev = p.heading || prev; });
   const paras = d.paragraphs.map(p => {
-    let h = '';
-    if (p.heading && p.heading !== head) { head = p.heading; h = `<h3>${esc(p.heading.replace(/^#+\s*/, ''))}</h3>`; }
+    const hd = starts[p.ordinal];
+    const h = hd && hd.replace(/^#+\s*/, '').trim() !== (d.title || '').trim() ? `<h3>${esc(hd.replace(/^#+\s*/, ''))}</h3>` : '';
     const body = p.heading && p.text.startsWith(p.heading) ? p.text.slice(p.heading.length).replace(/^\n/, '') : p.text;
     const tags = (byPara[p.id] || []).map(c => `<button class="link chip" data-concept="${c.id}" style="border-color:${esc(typeColor(c.type))}">${esc(c.name)}</button>`).join('');
     return `${h}<div class="para ${byPara[p.id] ? 'linked' : ''}"><label><input type="checkbox" data-pick="${p.id}" ${S.picked.has(p.id) ? 'checked' : ''}> <span class="pid">¶${p.id}</span></label>${esc(body)}${tags ? `<div class="tags">${tags}</div>` : ''}</div>`;

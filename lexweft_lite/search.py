@@ -70,7 +70,7 @@ def search(store: Store, queries: list[str] | str, top_k: int = 10, document_id:
         text = r["text"]
         if r["heading"] and text.startswith(r["heading"]):
             text = text[len(r["heading"]):].lstrip("\n")
-        out.append({"paragraph_id": pid, "document_id": r["document_id"], "title": r["title"], "heading": r["heading"].lstrip("# "),
+        out.append({"paragraph_id": pid, "document_id": r["document_id"], "title": r["title"],
                     "text": text, "score": round(scores[pid], 5), "matched": matched[pid], "concepts": concepts.get(pid, [])})
     return out
 

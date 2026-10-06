@@ -47,6 +47,9 @@ def _startup() -> None:
 
     def run() -> None:
         try:
+            from . import jobs as _jobs
+
+            _jobs.rechunk_all(_lib())   # 段落の分け方の版が変わっていれば、取り込み済みの資料を取り込み直す
             for st in _lib().stores():
                 while kw.backfill(st, limit=50):
                     pass
@@ -527,7 +530,8 @@ def document(document_id: int) -> dict[str, Any]:
     doc = st.get_document(document_id)
     if doc is None:
         raise HTTPException(404, "資料がありません")
-    return _with_scope({**doc, "paragraphs": st.paragraphs_of(document_id), "concepts": ly.concepts_in_document(st, document_id)}, st)
+    return _with_scope({**doc, "paragraphs": st.paragraphs_of(document_id), "sections": st.sections_of(document_id),
+                        "concepts": ly.concepts_in_document(st, document_id)}, st)
 
 
 @app.get("/api/documents/{document_id}/markdown", response_class=PlainTextResponse)

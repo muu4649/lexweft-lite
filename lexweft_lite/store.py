@@ -33,6 +33,16 @@ CREATE TABLE IF NOT EXISTS paragraphs (
 );
 CREATE INDEX IF NOT EXISTS idx_paragraphs_doc ON paragraphs(document_id, ordinal);
 
+-- 節の表: 見出しと、その節に入る段落の範囲 (段落の位置 ordinal)。見出しは段落には持たせない
+CREATE TABLE IF NOT EXISTS sections (
+    document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    ordinal INTEGER NOT NULL,
+    heading TEXT NOT NULL,
+    first_ordinal INTEGER NOT NULL,
+    last_ordinal INTEGER NOT NULL,
+    PRIMARY KEY (document_id, ordinal)
+);
+
 CREATE VIRTUAL TABLE IF NOT EXISTS paragraphs_fts USING fts5(
     text, heading, content='paragraphs', content_rowid='id', tokenize='trigram'
 );
@@ -114,7 +124,7 @@ CREATE TABLE IF NOT EXISTS store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL
 BASE = 10_000_000
 ID_TABLES = ("documents", "paragraphs", "concepts", "relations")
 # 番号を振り直すときに動かす列 (表, 列)
-ID_COLUMNS = (("documents", "id"), ("paragraphs", "id"), ("paragraphs", "document_id"), ("concepts", "id"),
+ID_COLUMNS = (("documents", "id"), ("paragraphs", "id"), ("paragraphs", "document_id"), ("sections", "document_id"), ("concepts", "id"),
               ("aliases", "concept_id"), ("evidence", "concept_id"), ("evidence", "paragraph_id"),
               ("relations", "id"), ("relations", "src_id"), ("relations", "dst_id"), ("relations", "paragraph_id"),
               ("doc_terms", "document_id"), ("doc_terms_done", "document_id"),
@@ -135,6 +145,29 @@ def normalize(text: str) -> str:
 def nfc(text: str) -> str:
     """パスの表記をそろえる. macOS のファイル名は濁点・半濁点を分けて (NFD) 持つことがあるため、合成した形 (NFC) で比べる."""
     return unicodedata.normalize("NFC", text or "")
+
+
+def _carry_target(old_text: str, old_heading: str, new_paras: list[tuple[int, str]]) -> int | None:
+    """前の段落に付いていた根拠を付け直す先: 同じ本文の段落、なければ前の本文を含む段落 (前の版の見出しは外して比べる)."""
+    text = old_text or ""
+    if old_heading and text.startswith(old_heading):
+        text = text[len(old_heading):].lstrip("\n")
+    text = text.strip()
+    if not text:
+        return None
+    for pid, body in new_paras:
+        if body == text:
+            return pid
+    for pid, body in new_paras:
+        if text in body:
+            return pid
+    # 前の版は長い段落を割るとき、前の塊の末尾を改行でつないで重ねていた。いちばん長い部分で探す
+    piece = max(text.split("\n"), key=len).strip()
+    if len(piece) >= 20:
+        for pid, body in new_paras:
+            if piece in body:
+                return pid
+    return None
 
 
 def now_iso() -> str:
@@ -292,11 +325,12 @@ class Store:
         return self.conn.execute("SELECT * FROM documents WHERE source = ?", (self._src_in(source),)).fetchone()
 
     def add_document(self, title: str, source: str, kind: str, sha256: str, meta: dict[str, Any],
-                     paragraphs: list[tuple[str, str]]) -> int:
-        """資料と段落 (見出し, 本文) を保存し、資料 ID を返す.
+                     paragraphs: list[str], sections: list[tuple[str, int, int]] | None = None) -> int:
+        """資料と段落 (本文) と節の表 (見出し, 最初の段落, 最後の段落) を保存し、資料 ID を返す.
 
+        段落には見出しを持たせない (見出しは節の表にだけ置く)。
         同じ出所の資料があれば、資料の番号はそのままで中身を置き換える (まとまりの番号や読んだ記録が引き継がれるように)。
-        そのとき、本文が変わっていない段落に付いていた根拠と関係は新しい段落に付け直す。
+        そのとき、前の段落に付いていた根拠と関係は、同じ本文の段落か、前の本文を含む段落に付け直す。
         """
         source = self._src_in(source)
         meta_json = json.dumps(meta, ensure_ascii=False, default=str)
@@ -306,27 +340,33 @@ class Store:
             carry_rel: list[sqlite3.Row] = []
             if old is not None:
                 doc_id = int(old["id"])
-                carry_ev = c.execute("SELECT e.concept_id, e.note, e.created_at, p.text FROM evidence e JOIN paragraphs p ON p.id = e.paragraph_id"
+                carry_ev = c.execute("SELECT e.concept_id, e.note, e.created_at, p.text, p.heading FROM evidence e JOIN paragraphs p ON p.id = e.paragraph_id"
                                      " WHERE p.document_id = ?", (doc_id,)).fetchall()
-                carry_rel = c.execute("SELECT r.id, p.text FROM relations r JOIN paragraphs p ON p.id = r.paragraph_id WHERE p.document_id = ?",
+                carry_rel = c.execute("SELECT r.id, p.text, p.heading FROM relations r JOIN paragraphs p ON p.id = r.paragraph_id WHERE p.document_id = ?",
                                       (doc_id,)).fetchall()
                 c.execute("DELETE FROM paragraphs WHERE document_id = ?", (doc_id,))
+                c.execute("DELETE FROM sections WHERE document_id = ?", (doc_id,))
                 c.execute("UPDATE documents SET title = ?, kind = ?, sha256 = ?, meta = ?, added_at = ? WHERE id = ?",
                           (title, kind, sha256, meta_json, now_iso(), doc_id))
             else:
                 doc_id = c.execute("INSERT INTO documents(title, source, kind, sha256, meta, added_at) VALUES (?, ?, ?, ?, ?, ?)",
                                    (title, source, kind, sha256, meta_json, now_iso())).lastrowid
-            by_text: dict[str, int] = {}
-            for i, (head, body) in enumerate(paragraphs):
-                pid = c.execute("INSERT INTO paragraphs(document_id, ordinal, heading, text) VALUES (?, ?, ?, ?)", (doc_id, i, head, body)).lastrowid
-                by_text.setdefault(body, int(pid))
+            new_paras: list[tuple[int, str]] = []
+            for i, body in enumerate(paragraphs):
+                pid = c.execute("INSERT INTO paragraphs(document_id, ordinal, heading, text) VALUES (?, ?, ?, ?)", (doc_id, i, "", body)).lastrowid
+                new_paras.append((int(pid), body))
+            for k, (head, first, last) in enumerate(sections or []):
+                c.execute("INSERT INTO sections(document_id, ordinal, heading, first_ordinal, last_ordinal) VALUES (?, ?, ?, ?, ?)",
+                          (doc_id, k, head, first, last))
             for r in carry_ev:
-                if r["text"] in by_text:
+                pid = _carry_target(r["text"], r["heading"], new_paras)
+                if pid is not None:
                     c.execute("INSERT OR IGNORE INTO evidence(concept_id, paragraph_id, note, created_at) VALUES (?, ?, ?, ?)",
-                              (r["concept_id"], by_text[r["text"]], r["note"], r["created_at"]))
+                              (r["concept_id"], pid, r["note"], r["created_at"]))
             for r in carry_rel:
-                if r["text"] in by_text:
-                    c.execute("UPDATE relations SET paragraph_id = ? WHERE id = ?", (by_text[r["text"]], r["id"]))
+                pid = _carry_target(r["text"], r["heading"], new_paras)
+                if pid is not None:
+                    c.execute("UPDATE relations SET paragraph_id = ? WHERE id = ?", (pid, r["id"]))
         return int(doc_id)
 
     def delete_document(self, document_id: int) -> bool:
@@ -410,6 +450,11 @@ class Store:
         return [dict(r) for r in self.conn.execute(
             "SELECT id, document_id, ordinal, heading, text FROM paragraphs WHERE document_id = ? ORDER BY ordinal LIMIT ? OFFSET ?",
             (document_id, -1 if limit is None else limit, max(0, offset)))]
+
+    def sections_of(self, document_id: int) -> list[dict[str, Any]]:
+        """資料の節の表 (見出し、最初と最後の段落の位置) を順に返す."""
+        return [dict(r) for r in self.conn.execute(
+            "SELECT ordinal, heading, first_ordinal, last_ordinal FROM sections WHERE document_id = ? ORDER BY ordinal", (document_id,))]
 
     def get_paragraphs(self, ids: list[int]) -> dict[int, dict[str, Any]]:
         if not ids:

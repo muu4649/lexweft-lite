@@ -38,8 +38,18 @@ server = MCPServer("lexweft-lite", instructions=INSTRUCTIONS)
 MAX_CHARS = 20000
 
 
+_RECHUNKED = False
+
+
 def _lib():
-    return runtime.library()
+    global _RECHUNKED
+    lib = runtime.library()
+    if not _RECHUNKED:   # 最初に使うとき、段落の分け方の版が変わっていれば取り込み直す
+        _RECHUNKED = True
+        from . import jobs
+
+        jobs.rechunk_all(lib)
+    return lib
 
 
 def _cap(text: str, max_chars: int = MAX_CHARS) -> str:

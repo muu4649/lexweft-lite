@@ -1,103 +1,64 @@
-"""本文の段落分割 (見出しを境界にし、段落優先、文字数ベース、重なり付き)."""
+"""本文を段落に分ける.
+
+見出しで節に分け、節の中を空行で段落に分ける。1 つの段落は 1 つの段落番号 (¶) になり、割ったりまとめたりしない。
+見出しは段落の本文に入れず、段落ごとにも持たせない。見出しは「節の表」(見出し、その節の最初と最後の段落) として別に持つ。
+(段落より細かい単位に見出しを受け継がせない、という設計の決まりによる)
+"""
 
 from __future__ import annotations
 
 import re
 
+# 分け方を変えたら上げる (取り込み済みの資料を、版が違えば取り込み直す)
+CHUNKING_VERSION = "2"
 
 _HEADING_RE = re.compile(r"^(#{1,6}\s+.+|【[^】]{1,30}】\s*|\d+(?:\.\d+)*[.．)]\s+\S.{0,40})$", re.M)
 
-
-def split_located(text: str, chunk_size: int = 800, overlap: int = 120) -> list[tuple[str, str]]:
-    """(本文, 位置情報) の組で返す.
-
-    位置情報は出典側で安定する値にする。見出しがあれば `head:<見出し>/<節内の通番>`、無ければ `ord:<通番>`。
-    再取り込みのとき、この値が同じで本文も同じチャンクは ID を保ったまま残す (引用と言及が生き残る)。
-    """
-    pairs: list[tuple[str, str]] = []
-    for i, c in enumerate(_split_with_heads(text, chunk_size, overlap)):
-        head, body = c
-        pairs.append((body, f"head:{head}/{i}" if head else f"ord:{i}"))
-    return pairs
+Section = tuple[str, int, int]   # (見出し, 最初の段落の位置, 最後の段落の位置)  位置は 0 始まり
 
 
-def split_text(text: str, chunk_size: int = 800, overlap: int = 120) -> list[str]:
-    """本文だけを返す (従来互換)."""
-    return [t for t, _ in split_located(text, chunk_size, overlap)]
-
-
-def _split_with_heads(text: str, chunk_size: int = 800, overlap: int = 120) -> list[tuple[str, str]]:
-    """見出しを硬い境界にして節ごとに分割し、各節を段落優先で chunk_size に収める.
-
-    レポート・論文は節が意味の単位なので、節をまたいで混ぜない。節が複数チャンクに割れたら見出しを各チャンク先頭に付ける。
-    戻り値は (見出し, 本文) の組。
-    """
-    text = text.replace("\r\n", "\n").strip()
+def split_document(text: str) -> tuple[list[str], list[Section]]:
+    """本文を (段落の一覧, 節の表) に分ける. 本文の無い節 (見出しだけ) は捨てる."""
+    text = (text or "").replace("\r\n", "\n").strip()
     if not text:
-        return []
-    sections: list[tuple[str, str]] = []
-    pos = 0
+        return [], []
+    raw: list[tuple[str, str]] = []
     heads = list(_HEADING_RE.finditer(text))
-    if len(heads) >= 2:
+    if heads:
+        if heads[0].start() > 0:
+            raw.append(("", text[: heads[0].start()]))
         for i, h in enumerate(heads):
-            body_start = h.end()
-            body_end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
-            if i == 0 and h.start() > 0:
-                sections.append(("", text[: h.start()]))
-            sections.append((h.group(0).strip(), text[body_start:body_end]))
-        out: list[tuple[str, str]] = []
-        for head, body in sections:
-            parts = _split_paragraphs(body, chunk_size, overlap)
-            if not parts and head:
-                parts = [""]
-            for part in parts:
-                whole = (head + "\n" + part).strip() if head else part
-                if whole.strip():
-                    out.append((head, whole))
-        return out
-    return [("", c) for c in _split_paragraphs(text, chunk_size, overlap)]
+            end = heads[i + 1].start() if i + 1 < len(heads) else len(text)
+            raw.append((h.group(0).strip(), text[h.end(): end]))
+    else:
+        raw.append(("", text))
+    paragraphs: list[str] = []
+    sections: list[Section] = []
+    for head, body in raw:
+        paras = [p.strip() for p in re.split(r"\n\s*\n", body) if p.strip()]
+        if not paras:
+            continue
+        first = len(paragraphs)
+        paragraphs += paras
+        if head:
+            sections.append((head, first, len(paragraphs) - 1))
+    return paragraphs, sections
 
 
-def _split_paragraphs(text: str, chunk_size: int, overlap: int) -> list[str]:
-    text = text.strip()
-    if not text:
-        return []
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
-    units: list[str] = []
-    for p in paragraphs:
-        if len(p) <= chunk_size:
-            units.append(p)
-        else:
-            # 長い段落は文単位に割る (日本語の句点と英語のピリオドの両方)
-            sentences = re.split(r"(?<=[。．！？!?\.])\s*", p)
-            buf = ""
-            for s in sentences:
-                if not s:
-                    continue
-                if len(buf) + len(s) > chunk_size and buf:
-                    units.append(buf)
-                    buf = s
-                else:
-                    buf += s
-            if buf:
-                units.append(buf)
+def from_labeled(pairs: list[tuple[str, str]]) -> tuple[list[str], list[Section]]:
+    """取り込み側で分けてある (見出し, 本文) の組 (表の資料など) を、段落と節の表にする. 1 つの組 = 1 つの節."""
+    paragraphs: list[str] = []
+    sections: list[Section] = []
+    for head, body in pairs:
+        body = (body or "").strip()
+        if not body:
+            continue
+        paragraphs.append(body)
+        if head:
+            sections.append((head.strip(), len(paragraphs) - 1, len(paragraphs) - 1))
+    return paragraphs, sections
 
-    chunks: list[str] = []
-    buf = ""
-    for u in units:
-        if len(buf) + len(u) + 2 > chunk_size and buf:
-            chunks.append(buf)
-            tail = buf[-overlap:] if overlap > 0 else ""
-            buf = (tail + "\n" + u) if tail else u
-        else:
-            buf = (buf + "\n\n" + u) if buf else u
-    if buf:
-        chunks.append(buf)
-    # 極端に長い単一ユニット (改行なしの巨大テキスト) を強制分割
-    out: list[str] = []
-    for c in chunks:
-        while len(c) > chunk_size * 2:
-            out.append(c[:chunk_size])
-            c = c[chunk_size - overlap :]
-        out.append(c)
-    return out
+
+def split_text(text: str) -> list[str]:
+    """段落の本文だけを返す."""
+    return split_document(text)[0]

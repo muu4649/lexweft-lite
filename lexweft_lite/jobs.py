@@ -267,3 +267,17 @@ def watch(interval: int = AUTO_INTERVAL, stop: threading.Event | None = None) ->
     th = threading.Thread(target=loop, daemon=True)
     th.start()
     return th
+
+
+def rechunk_all(lib: Any) -> dict[str, dict[str, Any]]:
+    """段落の分け方の版が変わった保存先を、取り込み直す (アプリと Claude が同時にしないよう鍵をかける)."""
+    from .ingest import rechunk, rechunk_needed
+
+    done: dict[str, dict[str, Any]] = {}
+    for st in lib.stores():
+        if not rechunk_needed(st):
+            continue
+        with store_lock(st):
+            if rechunk_needed(st):   # 鍵を待つ間に、ほかの処理が済ませていることがある
+                done[st.key] = rechunk(st, st.markdown_dir)
+    return done
