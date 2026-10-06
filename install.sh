@@ -21,6 +21,9 @@ fi
 echo "Python と必要なライブラリを .venv に入れます (初回は数分かかります)"
 # Python は uv が用意するもの (この Mac の CPU 向け) を使う. 古い Intel 用の Python が入っていても、それには頼らない
 UV_PYTHON_PREFERENCE=only-managed uv sync --python 3.12 --no-dev
+# 新しい版を上書きしたとき、前の版の下書き (.pyc) が使われないように消す
+# (配布 ZIP はファイルの日時をそろえてあるので、大きさが同じファイルは古い下書きのままになる)
+find "$HERE/lexweft_lite" -name __pycache__ -type d -prune -exec rm -rf {} +
 
 LAUNCHER="$HERE/LeXWeft Lite.command"
 cat > "$LAUNCHER" <<LAUNCH

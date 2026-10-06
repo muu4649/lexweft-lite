@@ -22,6 +22,8 @@ if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
 Write-Host "Python と必要なライブラリを .venv に入れます (初回は数分かかります)"
 $env:UV_PYTHON_PREFERENCE = "only-managed"
 uv sync --python 3.12 --no-dev
+# 新しい版を上書きしたとき、前の版の下書き (.pyc) が使われないように消す
+Get-ChildItem -Path (Join-Path $Here "lexweft_lite") -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force
 
 $Exe = Join-Path $Here ".venv\Scripts\lexweft.exe"
 $Launcher = Join-Path $Here "LeXWeft Lite.bat"
