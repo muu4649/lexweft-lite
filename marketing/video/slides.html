@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>LeXWeft Lite 紹介</title>
+<!-- 紹介動画のスライド. ?s=番号 で 1 枚だけ表示する (build_intro.py が 1920x1080 で写真にする) -->
+<style>
+  :root { --ink: #1f2328; --muted: #5b6470; --accent: #0e7490; --accent2: #22a3c4; --dark: #0f1a1e; --bg: #f7f7f5; --line: #e5e7eb; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1920px; height: 1080px; overflow: hidden; background: var(--bg); color: var(--ink);
+               font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif; }
+  section { display: none; width: 1920px; height: 1080px; position: relative; padding: 90px 140px; }
+  section.on { display: block; }
+  section:not(.on) { display: none !important; }   /* .center (display: flex) より強く隠す */
+  section.dark { background: var(--dark); color: #fff; }
+  .kicker { font-size: 30px; letter-spacing: .12em; color: var(--accent2); font-weight: 600; }
+  h1 { font-size: 112px; font-weight: 800; letter-spacing: .01em; }
+  h1 span { color: var(--accent2); }
+  h2 { font-size: 68px; font-weight: 800; line-height: 1.3; }
+  .lead { font-size: 44px; line-height: 1.6; color: #cfe3e8; margin-top: 30px; }
+  .sub { font-size: 34px; color: var(--muted); margin-top: 18px; line-height: 1.5; }
+  .center { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; }
+  .grid4 { display: grid; grid-template-columns: 1fr 1fr; gap: 34px; margin-top: 56px; }
+  .card { background: #fff; border: 2px solid var(--line); border-radius: 22px; padding: 38px 44px; }
+  .card .no { display: inline-grid; place-items: center; width: 64px; height: 64px; border-radius: 50%; background: var(--accent);
+              color: #fff; font-size: 34px; font-weight: 800; margin-bottom: 18px; }
+  .card b { display: block; font-size: 44px; line-height: 1.35; }
+  .card p { font-size: 30px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+  .walls { display: grid; grid-template-columns: repeat(3, 1fr); gap: 34px; margin-top: 64px; }
+  .wall { background: #fff; border-left: 10px solid #c2410c; border-radius: 16px; padding: 40px 38px; }
+  .wall b { font-size: 46px; display: block; }
+  .wall p { font-size: 31px; color: var(--muted); margin-top: 16px; line-height: 1.55; }
+  /* 映像を重ねるスライド: 上に機能名、下は映像の枠 (x=240, y=150, 1440x900) */
+  .clip { padding: 0; }
+  .clip .head { position: absolute; left: 0; right: 0; top: 0; height: 140px; display: flex; align-items: center; gap: 28px; padding: 0 70px;
+                background: #fff; border-bottom: 2px solid var(--line); }
+  .clip .head .no { flex: none; display: grid; place-items: center; width: 80px; height: 80px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 42px; font-weight: 800; }
+  .clip .head b { font-size: 50px; white-space: nowrap; }
+  .clip .head span { flex: 1; min-width: 0; font-size: 28px; line-height: 1.4; color: var(--muted); margin-left: 6px; }
+  .clip .frame { position: absolute; left: 236px; top: 158px; width: 1448px; height: 908px; border-radius: 14px; background: #111;
+                 box-shadow: 0 14px 44px rgba(0,0,0,.18); }
+  .flow { display: flex; align-items: center; gap: 22px; margin-top: 80px; }
+  .step { flex: 1; background: #fff; border: 3px solid var(--accent); border-radius: 22px; padding: 34px 20px; text-align: center; min-height: 230px;
+          display: flex; flex-direction: column; justify-content: center; }
+  .step b { font-size: 40px; line-height: 1.35; }
+  .step p { font-size: 26px; color: var(--muted); margin-top: 12px; }
+  .arrow { font-size: 54px; color: var(--accent); font-weight: 800; }
+  .note { position: absolute; left: 140px; right: 140px; bottom: 70px; font-size: 26px; color: var(--muted); line-height: 1.6; }
+  .nums { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-top: 70px; }
+  .num { flex: none; text-align: center; }
+  .num .v { font-size: 84px; font-weight: 800; line-height: 1; white-space: nowrap; }
+  .num .l { font-size: 34px; color: var(--muted); margin-top: 18px; }
+  .num.big .v { color: var(--accent); font-size: 132px; }
+  .vs { font-size: 70px; color: var(--muted); padding-bottom: 70px; }
+  ul.check { list-style: none; margin-top: 56px; }
+  ul.check li { font-size: 46px; padding: 22px 0 22px 80px; position: relative; border-bottom: 2px solid var(--line); }
+  ul.check li::before { content: "✓"; position: absolute; left: 0; top: 18px; color: var(--accent); font-weight: 800; font-size: 50px; }
+  ul.check li small { display: block; font-size: 30px; color: var(--muted); margin-top: 6px; }
+  .cta { margin-top: 60px; display: grid; gap: 30px; width: 1300px; }
+  .cta div { background: rgba(255,255,255,.08); border: 2px solid rgba(255,255,255,.18); border-radius: 18px; padding: 30px 40px; text-align: left; }
+  .cta b { display: block; font-size: 34px; color: #7dd3e4; }
+  .cta span { display: block; font-size: 44px; margin-top: 8px; font-weight: 700; }
+  .uc { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-top: 46px; }
+  .uc .card b { font-size: 42px; }
+  .uc .card .who { font-size: 28px; color: var(--accent); font-weight: 700; letter-spacing: .04em; }
+  .uc .card p { font-size: 29px; }
+  .uc .card .got { color: var(--ink); font-weight: 600; }
+  .bridge { display: grid; grid-template-columns: 1fr 260px 1fr; align-items: center; margin-top: 60px; }
+  .side { background: #fff; border-radius: 22px; padding: 36px 40px; border: 3px solid; }
+  .side.a { border-color: #c2410c; } .side.b { border-color: #0e7490; }
+  .side .g { font-size: 28px; font-weight: 700; } .side.a .g { color: #c2410c; } .side.b .g { color: #0e7490; }
+  .side b { display: block; font-size: 40px; margin-top: 12px; line-height: 1.4; }
+  .link { text-align: center; }
+  .link .line { height: 12px; background: linear-gradient(90deg, #c2410c, #0e7490); border-radius: 6px; margin: 0 10px; }
+  .link .w { font-size: 28px; color: var(--muted); margin-top: 16px; line-height: 1.5; }
+  .got3 { display: flex; gap: 26px; margin-top: 50px; }
+  .got3 div { flex: 1; background: #e6f2f5; border-radius: 16px; padding: 26px 30px; font-size: 32px; font-weight: 600; color: #0b4d5f; }
+  .ba { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; margin-top: 60px; }
+  .ba > div { background: #fff; border-radius: 22px; padding: 40px 46px; border: 2px solid var(--line); }
+  .ba .t { font-size: 32px; color: var(--muted); font-weight: 700; }
+  .ba .big { font-size: 130px; font-weight: 800; line-height: 1.1; margin-top: 10px; }
+  .ba .big small { font-size: 48px; color: var(--muted); }
+  .ba .after { border: 4px solid var(--accent); } .ba .after .big { color: var(--accent); }
+  .ba p { font-size: 30px; color: var(--muted); margin-top: 12px; line-height: 1.5; }
+</style>
+</head>
+<body>
+
+<section class="dark center" data-s="1">
+  <div class="kicker">TEST VERSION ・ 無料</div>
+  <h1 style="margin-top:24px">LeXWeft <span>Lite</span></h1>
+  <div class="lead">たまった資料を「地図」にして、<br>AI に少ない量で、取りこぼさず読ませる</div>
+</section>
+
+<section data-s="2">
+  <div class="kicker">何ができる？</div>
+  <h2 style="margin-top:14px">資料を入れるだけ。AI が読む量は約 1/170。</h2>
+  <div class="grid4">
+    <div class="card"><span class="no">1</span><b>資料を入れるだけで「地図」に</b><p>中身の似た資料をまとめ、何の集まりかを名前で示す</p></div>
+    <div class="card"><span class="no">2</span><b>グループどうしの関わりが見える</b><p>サブフォルダ（例: 自社のメモ / 他社の資料）の重なりを図に</p></div>
+    <div class="card"><span class="no">3</span><b>Claude が地図をたどって読む</b><p>必要な段落だけを読み、根拠の段落番号つきで答える</p></div>
+    <div class="card"><span class="no">4</span><b>AI が読む量は約 170 分の 1</b><p>資料は PC の中のまま。API キーは要りません</p></div>
+  </div>
+</section>
+
+<section data-s="3">
+  <div class="kicker">こんなことで困っていませんか</div>
+  <h2 style="margin-top:14px">資料が増えると、AI に「全部渡す」のは難しい</h2>
+  <div class="walls">
+    <div class="wall"><b>量の壁</b><p>一度に読める量には上限がある。特許 500 件は約 195 万字</p></div>
+    <div class="wall"><b>お金と時間の壁</b><p>料金や利用の上限は、読ませた量で決まる。多いほど遅く、高い</p></div>
+    <div class="wall"><b>取りこぼしの壁</b><p>キーワードで絞ると、言い方が違う資料（熱暴走 / 延焼 …）を落とす</p></div>
+  </div>
+</section>
+
+<section class="clip" data-s="4">
+  <div class="head"><div class="no">1</div><b>フォルダを決めて、入れるだけ</b><span>画面に落とす・Finder で入れる → 自動で取り込み、意味層ができる</span></div>
+  <div class="frame"></div>
+</section>
+
+<section class="clip" data-s="5">
+  <div class="head"><div class="no">1</div><b>中身ごとに「地図」になる</b><span>似た資料をまとまりに分け、何の集まりかを名前で示す</span></div>
+  <div class="frame"></div>
+</section>
+
+<section class="clip" data-s="6">
+  <div class="head"><div class="no">2</div><b>グループどうしの関わりが見える</b><span>サブフォルダがグループに。近い資料の組を線で結ぶ</span></div>
+  <div class="frame"></div>
+</section>
+
+<section class="clip" data-s="7">
+  <div class="head"><div class="no">3</div><b>意味層でたどる検索</b><span>言い方が違う資料にも届き、読み残しも理由つきで示す</span></div>
+  <div class="frame"></div>
+</section>
+
+<section data-s="8">
+  <div class="kicker">3 ・ Claude とつなぐ（MCP）</div>
+  <h2 style="margin-top:14px">Claude は「地図 → まとまり → 段落」の順にたどる</h2>
+  <div class="flow">
+    <div class="step"><b>地図を見る</b><p>どんなまとまりがあるか</p></div><div class="arrow">→</div>
+    <div class="step"><b>まとまりを選ぶ</b><p>質問に関係する所だけ</p></div><div class="arrow">→</div>
+    <div class="step"><b>段落を読む</b><p>全文ではなく必要な所</p></div><div class="arrow">→</div>
+    <div class="step"><b>読み残しを確かめる</b><p>関係が強いのに未読の資料</p></div><div class="arrow">→</div>
+    <div class="step"><b>根拠つきで答える</b><p>段落番号で元に戻れる</p></div>
+  </div>
+  <div class="note">人が分厚い本を読むときに、まず目次を見て、必要な章だけを開くのと同じです。</div>
+</section>
+
+<section data-s="9">
+  <div class="kicker">4 ・ どれくらい効率がいい？</div>
+  <h2 style="margin-top:14px">実際の特許 500 件で、Claude が読んだ量</h2>
+  <div class="nums">
+    <div class="num"><div class="v">約 195 万字</div><div class="l">全部を渡す</div></div>
+    <div class="vs">→</div>
+    <div class="num"><div class="v">約 1.1 万字</div><div class="l">意味層でたどる（道具 2 回）</div></div>
+    <div class="num big"><div class="v">1/170</div><div class="l">読む量</div></div>
+  </div>
+  <div class="note">読む量は資料の数によらずほぼ一定なので、資料が多いほど効きます。数字は Claude が受け取った文字数（トークン数とは少し違う）。特許では届いた資料の良し悪しは未測定。架空の資料では、キーワード検索 4〜10 件に対し、たどると同じ話題の 15 件中 10〜15 件に届きました。</div>
+</section>
+
+<section data-s="10">
+  <div class="kicker">安心して使える</div>
+  <h2 style="margin-top:14px">資料は、あなたの PC の中に</h2>
+  <ul class="check">
+    <li>アプリは資料を外に送らない<small>Claude につないだときは、Claude が読んだ部分だけが Claude に届きます</small></li>
+    <li>API キーは要らない<small>アプリ自身は AI を呼び出しません</small></li>
+    <li>元のファイルは書き換えない<small>意味層はフォルダの中の _LeXWeft に別に保存</small></li>
+  </ul>
+</section>
+
+<section data-s="11">
+  <div class="kicker">こんな人に</div>
+  <h2 style="margin-top:14px">たまった資料を、AI と一緒に読みたい人へ</h2>
+  <ul class="check">
+    <li>特許・論文・技術資料を調べる仕事の人<small>知財・研究開発・技術調査</small></li>
+    <li>報告書や議事録がたまって、どこに何があるか分からない人</li>
+    <li>Claude を仕事で使い、手元の資料を根拠つきで読ませたい人</li>
+  </ul>
+</section>
+
+<section class="dark center" data-s="12">
+  <div class="kicker">たまった資料ほど、効く。</div>
+  <h1 style="font-size:96px;margin-top:20px">LeXWeft <span>Lite</span> テスト版</h1>
+  <div class="lead" style="margin-top:14px">Mac 向け・無料（Windows は試験中）</div>
+  <div class="cta">
+    <div><b>ダウンロードと使い方</b><span>github.com/muu4649/lexweft-lite</span></div>
+    <div><b>感想をお聞かせください</b><span>README の「感想フォーム」から（5 分ほど）</span></div>
+  </div>
+</section>
+
+<section data-s="13">
+  <div class="kicker">ユースケース</div>
+  <h2 style="margin-top:14px">こんな場面で使えます</h2>
+  <div class="uc">
+    <div class="card"><div class="who">知財・特許調査</div><b>自社と他社の特許の重なりと空白</b><p>自社 / 他社でサブフォルダを分けて入れる → <span class="got">どこで重なり、どこが手薄かが図で分かる</span></p></div>
+    <div class="card"><div class="who">研究開発の文献調査</div><b>言い方が違う関連研究も逃さない</b><p>論文・報告書を入れる → <span class="got">Claude が読み残しを確かめ、根拠の段落つきで答える</span></p></div>
+    <div class="card"><div class="who">社内の報告書・議事録</div><b>たまった資料の全体を一目で</b><p>フォルダに入れていくだけ → <span class="got">何がどれだけあるかが地図で分かり、質問もできる</span></p></div>
+    <div class="card"><div class="who">用途探索・新規事業</div><b>異なる分野の資料の接点を探す</b><p>分野ごとにサブフォルダで入れる → <span class="got">技術が生かせそうな組み合わせが線で見える</span></p></div>
+  </div>
+</section>
+
+<section data-s="14">
+  <div class="kicker">ユースケース ・ 用途探索（実際に試した例）</div>
+  <h2 style="margin-top:14px">素材の特許 300 件 × ロボットの特許 200 件を入れると</h2>
+  <div class="bridge">
+    <div class="side a"><div class="g">グループ: 素材の特許</div><b>材料の性質を予測・探索する特許</b></div>
+    <div class="link"><div class="line"></div><div class="w">共通の言葉<br><b style="color:#1f2328">説明変数・潜在変数<br>学習済みモデル</b></div></div>
+    <div class="side b"><div class="g">グループ: ロボットの特許</div><b>ロボットの動きを学習で決める特許</b></div>
+  </div>
+  <div class="got3"><div>素材側の技術が生かせそうな分野</div><div>読むべき特許の組</div><div>話を聞くべき相手の見当</div></div>
+  <div class="note">つながりは、中身のベクトルの近さで見つけます。本当に関係があるかは、資料を開いて確かめてください。</div>
+</section>
+
+<section data-s="15">
+  <div class="kicker">ユースケース ・ 調査（架空の資料で確かめた例）</div>
+  <h2 style="margin-top:14px">言い方が違う資料も、取りこぼさない</h2>
+  <div class="ba">
+    <div><div class="t">キーワード「熱暴走」で探す</div><div class="big">4<small> / 15 件</small></div><p>「延焼」「類焼」「熱連鎖」と書いた資料には届かない</p></div>
+    <div class="after"><div class="t">意味層でたどる + 読み残しの確認</div><div class="big">15<small> / 15 件</small></div><p>道具 2 回。言い方が違っても、同じ話題の資料に届く</p></div>
+  </div>
+  <div class="note">同じ話題の資料 15 件を、わざと言い方を変えて書いた架空の資料での結果です（4 つの話題で、キーワード 4〜10 件 → たどると 10〜15 件）。</div>
+</section>
+
+<script>
+  // 1 枚だけ表示する (build_intro.py が show(番号) を呼んで写真にする。?s=番号 で開いても見られる)
+  window.show = n => {
+    document.querySelectorAll('section').forEach(x => x.classList.toggle('on', x.dataset.s === String(n)));
+    return document.querySelector('section.on')?.dataset.s;
+  };
+  show(new URLSearchParams(location.search).get('s') || '1');
+</script>
+</body>
+</html>
