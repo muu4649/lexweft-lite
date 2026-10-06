@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, File, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -20,6 +20,7 @@ from . import __version__, config
 from . import clusters as cl
 from . import concepts as co
 from . import groups as gr
+from . import inbox as ib
 from . import keywords as kw
 from . import layer as ly
 from . import runtime
@@ -152,6 +153,7 @@ class PathIn(BaseModel):
 class TextIn(BaseModel):
     title: str
     text: str
+    group: str | None = None
 
 
 class PrefixIn(BaseModel):
@@ -425,14 +427,86 @@ def add_path(body: PathIn) -> list[dict[str, Any]]:
         raise HTTPException(404, f"見つかりません: {e}") from e
 
 
+def _import_inbox() -> dict[str, Any] | None:
+    """資料を入れるフォルダを取り込む (ほかの取り込みが進んでいれば、あとで自動の取り込みに任せる)."""
+    from . import jobs
+
+    try:
+        return jobs.start(ib.path(_lib()) or "").view()
+    except ValueError:
+        return None
+
+
 @app.post("/api/documents/text")
 def add_text(body: TextIn) -> dict[str, Any]:
+    lib = _lib()
+    if ib.path(lib):   # 資料を入れるフォルダがあれば、そこに Markdown のファイルとして保存して取り込む
+        dest = ib.save_text(lib, body.title, body.text, body.group)
+        return {"title": body.title, "status": "saved", "path": str(dest), "job": _import_inbox()}
     return ingest_text(runtime.store(), body.title, body.text, markdown_dir=runtime.markdown_dir()).__dict__
 
 
+class InboxIn(BaseModel):
+    path: str
+
+
+class GroupNameIn(BaseModel):
+    name: str
+
+
+class OpenIn(BaseModel):
+    group: str | None = None
+
+
+@app.get("/api/inbox")
+def inbox_info() -> dict[str, Any]:
+    """資料を入れるフォルダ (決まっていなければ、おすすめの場所)."""
+    return ib.info(_lib())
+
+
+@app.post("/api/inbox")
+def inbox_choose(body: InboxIn) -> dict[str, Any]:
+    out = ib.choose(_lib(), body.path)
+    out["job"] = _import_inbox()
+    return out
+
+
+@app.post("/api/inbox/group")
+def inbox_group(body: GroupNameIn) -> dict[str, Any]:
+    return ib.add_group(_lib(), body.name)
+
+
+@app.post("/api/inbox/open")
+def inbox_open(body: OpenIn) -> dict[str, Any]:
+    return {"opened": ib.open_in_finder(_lib(), body.group)}
+
+
+@app.post("/api/inbox/import")
+def inbox_import() -> dict[str, Any]:
+    job = _import_inbox()
+    if job is None:
+        raise HTTPException(409, "ほかの取り込みが進んでいます。終わってから押してください")
+    return job
+
+
 @app.post("/api/documents/upload")
-async def upload(files: list[UploadFile] = File(...)) -> list[dict[str, Any]]:
-    """選んだファイルを保存先の files/ に写してから取り込む (元のファイルは触らない)."""
+async def upload(files: list[UploadFile] = File(...), group: str | None = Form(None)) -> list[dict[str, Any]]:
+    """選んだファイルを、資料を入れるフォルダ (無ければ保存先の files/) に写してから取り込む (元のファイルは触らない)."""
+    lib = _lib()
+    if ib.path(lib):
+        out: list[dict[str, Any]] = []
+        for f in files:
+            data = await f.read(ib.MAX_FILE_BYTES + 1)
+            try:
+                dest = ib.save_file(lib, f.filename or "", data, group)
+                out.append({"title": dest.name, "status": "saved", "path": str(dest)})
+            except ValueError as e:
+                out.append({"title": f.filename, "status": "unsupported", "error": str(e)})
+        if any(o["status"] == "saved" for o in out):
+            job = _import_inbox()
+            for o in out:
+                o["job"] = job
+        return out
     dest = config.home() / "files"
     dest.mkdir(exist_ok=True)
     out: list[dict[str, Any]] = []
@@ -493,6 +567,8 @@ def route(q: str, scope: str | None = None, max_documents: int = 8) -> dict[str,
     r = nav.route(lib, q, scope, max_documents)
     shown = [d["document_id"] for d in r["documents"]]
     u = nav.unread(lib, q, read_document_ids=shown, limit=8, scope=scope)
+    gr.annotate(lib, r["documents"])
+    gr.annotate(lib, u["unread"])
     return {"route": r, "unread": u}
 
 

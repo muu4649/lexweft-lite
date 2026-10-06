@@ -21,6 +21,7 @@ from .store import Store
 COLORS = ["#0e7490", "#c2410c", "#7c3aed", "#15803d", "#be185d", "#a16207", "#1d4ed8", "#4b5563"]
 TOP = ""   # 登録したフォルダの直下に置いた資料
 TOP_LABEL = "（フォルダの直下）"
+TOP_COLOR = "#9ca3af"
 
 
 def group_of_source(stored: str) -> str:
@@ -46,7 +47,9 @@ def groups(store: Store) -> list[dict[str, Any]]:
     """グループの一覧 (資料の多い順). 色は名前の順で決める (一覧の並びが変わっても色は変わらない)."""
     counts = Counter(doc_groups(store).values())
     labels = _labels(store)
-    color = {k: COLORS[i % len(COLORS)] for i, k in enumerate(sorted(counts))}
+    # 直下の資料はいつも灰色にして、サブフォルダの色がずれないようにする
+    color = {k: COLORS[i % len(COLORS)] for i, k in enumerate(sorted(k for k in counts if k != TOP))}
+    color[TOP] = TOP_COLOR
     out = [{"key": k, "label": labels.get(k) or (k if k != TOP else TOP_LABEL), "color": color[k], "documents": n} for k, n in counts.items()]
     return sorted(out, key=lambda g: (-g["documents"], g["key"]))
 
@@ -174,3 +177,21 @@ def links(store: Store, a: str | None = None, b: str | None = None, per_doc: int
     out["threshold"] = round(floor, 3)
     out["note"] = "近い組は、意味のベクトルの近さで選んでいます。本当に関係があるかは、資料を開いて確かめてください。"
     return out
+
+
+def annotate(lib: Any, items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """資料の一覧 (scope と document_id を持つもの) に、グループ (名前と色) を足す. グループが 2 つ以上あるフォルダだけ."""
+    cache: dict[str, tuple[dict[int, str], dict[str, dict[str, Any]]]] = {}
+    for it in items:
+        scope = it.get("scope")
+        if not scope:
+            continue
+        if scope not in cache:
+            st = lib.for_scope(scope)
+            gl = groups(st)
+            cache[scope] = (doc_groups(st), {g["key"]: g for g in gl} if len(gl) >= 2 else {})
+        dg, info = cache[scope]
+        g = info.get(dg.get(int(it["document_id"]), TOP))
+        if g:
+            it["group"] = {"key": g["key"], "label": g["label"], "color": g["color"]}
+    return items

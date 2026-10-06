@@ -92,8 +92,8 @@ loaders.docs = async () => {
   if (S.doc) loadSimilar();
 };
 
-function jobHtml() {
-  const j = S.job;
+// 取り込む前の確認 (すでにあるフォルダを登録するとき)
+function scanHtml() {
   if (S.scan) {
     const sc = S.scan, many = sc.files > 1000;
     const kinds = Object.entries(sc.by_suffix || {}).map(([k, n]) => `${esc(k)} ${num(n)}`).join(' ・ ');
@@ -108,6 +108,11 @@ function jobHtml() {
         : `<div class="small" style="margin-top:6px;color:var(--warn)">${esc(sc.layer_reason)}</div>`) : ''}
       <div class="row" style="margin-top:8px">${sc.files ? '<button class="btn primary" id="scango">取り込む</button>' : ''}<button class="btn" id="scanno">やめる</button></div></div>`;
   }
+}
+
+// 取り込みの進み具合
+function jobHtml() {
+  const j = S.job;
   if (!j) return '';
   const pct = j.total ? Math.round(j.done * 100 / j.total) : 0;
   const c = j.counts || {};
@@ -163,8 +168,9 @@ function bindJob() {
 
 // ---------------- 取り込み ----------------
 loaders.home = async () => {
-  const [sources, job] = await Promise.all([api('/api/sources'), api('/api/jobs/latest')]);
-  S.sources = sources;
+  const [sources, job, inbox] = await Promise.all([api('/api/sources'), api('/api/jobs/latest'), api('/api/inbox')]);
+  S.sources = sources; S.inbox = inbox;
+  if (S.inGroup && !inbox.groups.some(g => g.name === S.inGroup)) S.inGroup = '';
   if (job && job.id) S.job = job;
   renderHome();
   if (S.job?.state === 'running') pollJob();
@@ -217,41 +223,100 @@ function pollLayer() {
   }, 2000);
 }
 
+const finderName = /Mac/.test(navigator.platform) ? 'Finder' : 'エクスプローラー';
+
+function inboxHtml() {
+  const I = S.inbox || {};
+  if (!I.path || S.inEdit) {
+    return `<p class="small muted">これから資料を入れていくフォルダを決めます。決めたフォルダに入れたファイルは自動で取り込まれ、意味層ができます。中をサブフォルダに分けると、サブフォルダごとの「グループ」になります。</p>
+      <input type="text" id="inpath" value="${esc(S.inEdit ? I.path || I.suggestion : I.suggestion)}">
+      ${I.reason ? `<div class="small" style="color:var(--warn);margin-top:4px">${esc(I.reason)}</div>` : ''}
+      <div class="row" style="margin-top:8px"><button class="btn primary" id="inset">このフォルダにする</button><button class="btn" id="inpick">別の場所を選ぶ</button>
+        ${S.inEdit ? '<button class="link small" id="incancel">やめる</button>' : ''}</div>
+      <div class="small muted" style="margin-top:6px">フォルダが無ければ作ります。おすすめは書類フォルダの中です。</div>`;
+  }
+  const groups = (I.groups || []).map(g => `<span class="chip">📁 ${esc(g.name)} <span class="muted">${num(g.files)}</span></span>`).join('');
+  return `<div class="small muted">資料を入れるフォルダ</div>
+    <div style="word-break:break-all;font-weight:600">${esc(I.path)}</div>
+    <div class="small muted">${num(I.files)} 件のファイル${I.exists ? '' : ' ・ <span style="color:var(--warn)">フォルダが見つかりません</span>'}${I.auto ? ' ・ 変わったら自動で取り込みます' : ''}</div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="inopen">${finderName}で開く</button><button class="link small" id="inchange">フォルダを変える</button></div>
+    <h3>グループ（サブフォルダ）</h3>
+    <div>${groups || '<span class="small muted">まだありません。テーマや出どころで分けると、グループどうしの関わりが見られます（例: 自社のメモ / 他社の資料）</span>'}</div>
+    <div class="row" style="margin-top:6px"><input type="text" id="ingname" placeholder="新しいグループの名前" style="flex:1"><button class="btn" id="ingadd">作る</button></div>`;
+}
+
+function putHtml() {
+  const I = S.inbox || {};
+  if (!I.path) return `<div class="small muted">先に、①で資料を入れるフォルダを決めてください。</div><div id="jobbox" style="margin-top:10px">${jobHtml()}</div>`;
+  const gsel = (I.groups || []).length ? `<div class="row small" style="margin-bottom:6px">入れる先:
+      <select id="ingroup"><option value="">フォルダの直下</option>${I.groups.map(g => `<option ${g.name === S.inGroup ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></div>` : '';
+  return `${gsel}<div class="drop" id="drop">ここにファイルを落とす<br><span class="small">md / txt / html / pdf / docx / csv</span></div>
+    <div class="row" style="margin-top:8px"><button class="btn" id="pick">ファイルを選ぶ</button><button class="btn" id="inrun">今すぐ取り込む</button></div>
+    <input type="file" id="file" multiple hidden accept=".md,.markdown,.txt,.html,.htm,.pdf,.docx,.csv">
+    <div class="small muted" style="margin-top:6px">${finderName}でフォルダに直接入れても、数分のうちに自動で取り込みます。入れたファイルは、このフォルダの中にそのまま残ります。</div>
+    <details style="margin-top:8px"><summary class="small">文章を貼り付けて入れる</summary>
+      <input type="text" id="ttitle" placeholder="題名" style="margin:8px 0"><textarea id="ttext" placeholder="本文"></textarea>
+      <button class="btn" id="addtext" style="margin-top:6px">フォルダに保存して取り込む</button></details>
+    <div id="jobbox" style="margin-top:10px">${jobHtml()}</div>`;
+}
+
 function renderHome() {
-  const src = (S.sources || []).map(f => `<tr><td><div style="word-break:break-all">${esc(f.path)}</div>
+  const inboxPath = S.inbox?.path;
+  const others = (S.sources || []).filter(f => f.path !== inboxPath);
+  const src = others.map(f => `<tr><td><div style="word-break:break-all">${esc(f.path)}</div>
       <div class="small muted">${num(f.documents)} 件 ・ ${f.last_run ? '最後に取り込み ' + esc(f.last_run.replace('T', ' ').slice(0, 16)) : 'まだ取り込んでいません'}${f.exists ? '' : ' ・ <span style="color:var(--warn)">フォルダが見つかりません</span>'}</div>
       ${whereBadge({scope: f.path, location: f.location, reason: f.reason, data_dir: f.data_dir})}
       ${f.changed ? '<span class="chip" style="color:var(--warn)">新しいファイル・変わったファイルがあります</span>' : ''}
       <label class="small"><input type="checkbox" data-auto="${esc(f.path)}" ${f.auto ? 'checked' : ''}> 変わったら自動で取り込む</label></td>
       <td style="white-space:nowrap;text-align:right"><button class="btn" data-run="${esc(f.path)}">取り込み直す</button> <button class="link small" data-unreg="${esc(f.path)}">外す</button></td></tr>`).join('');
   $('#main').innerHTML = `<div class="steps3">
-    <div class="panel step"><div class="stepno">1</div><h2>フォルダを登録する</h2>
-      <p class="small muted">資料の入ったフォルダを選びます。中の md / txt / html / pdf / docx / csv を読みます（隠しフォルダや開発用のフォルダは読みません）。</p>
-      <div class="row"><button class="btn primary" id="pickdir">フォルダを追加</button>${(S.sources || []).length ? '<button class="btn" id="runall">すべて取り込み直す</button>' : ''}</div>
-      ${src ? `<table style="margin-top:10px">${src}</table>` : '<div class="empty small">まだフォルダがありません</div>'}
-      <details style="margin-top:10px"><summary class="small">ファイル・URL・文章を個別に入れる</summary>
-        <div class="row" style="margin-top:8px"><button class="btn" id="pick">ファイルを選ぶ</button></div>
-        <div class="drop" id="drop" style="margin-top:8px">ここにファイルを落としても入れられます</div>
-        <input type="file" id="file" multiple hidden accept=".md,.markdown,.txt,.html,.htm,.pdf,.docx,.csv">
-        <div class="row" style="margin-top:8px"><input type="text" id="path" placeholder="パス または https://..." style="flex:1"><button class="btn" id="addpath">確かめる</button></div>
-        <input type="text" id="ttitle" placeholder="貼り付ける文章の題名" style="margin:8px 0"><textarea id="ttext" placeholder="本文"></textarea>
-        <button class="btn" id="addtext" style="margin-top:6px">文章を保存</button></details>
-    </div>
-    <div class="panel step"><div class="stepno">2</div><h2>取り込む</h2>
-      <div id="jobbox">${jobHtml() || `<div class="small muted">${S.ov.stats.documents ? `資料 ${num(S.ov.stats.documents)} 件を取り込んであります。` : 'フォルダを追加すると、ここで進み具合が見られます。'}</div>`}</div>
-      ${S.ov.stats.documents ? '<div class="row" style="margin-top:8px"><button class="btn" id="todocs">資料の一覧を見る</button></div>' : ''}
-    </div>
+    <div class="panel step"><div class="stepno">1</div><h2>資料を入れるフォルダを決める</h2>${inboxHtml()}</div>
+    <div class="panel step"><div class="stepno">2</div><h2>資料を入れる</h2>${putHtml()}
+      ${S.ov.stats.documents ? '<div class="row" style="margin-top:8px"><button class="btn" id="todocs">資料の一覧を見る</button></div>' : ''}</div>
     <div class="panel step"><div class="stepno">3</div><h2>意味層ができる</h2>
       <p class="small muted">取り込むと自動で、フォルダごとに資料をベクトルにしてまとまり（クラスター）に分け、それぞれがどんな集まりかを語で示します。よく一緒に出る語のつながりも作ります。</p>
       <div id="layerbox">${layerHtml()}</div>
-    </div></div>`;
+    </div></div>
+    <div class="panel"><h2>すでにあるフォルダから意味層を作る <span class="small muted">（追加の機能）</span></h2>
+      <p class="small muted">資料がすでに入っているフォルダを、そのまま登録して意味層を作れます。ファイルは動かしません。中の md / txt / html / pdf / docx / csv を読みます（隠しフォルダや開発用のフォルダは読みません）。</p>
+      <div class="row"><button class="btn" id="pickdir">フォルダを選んで登録</button>${others.length ? '<button class="btn" id="runall">すべて取り込み直す</button>' : ''}</div>
+      ${S.scan ? `<div style="margin-top:8px">${scanHtml()}</div>` : ''}
+      ${src ? `<table style="margin-top:10px">${src}</table>` : ''}
+      <details style="margin-top:10px"><summary class="small">パスや URL で指定する</summary>
+        <div class="row" style="margin-top:8px"><input type="text" id="path" placeholder="フォルダのパス または https://..." style="flex:1"><button class="btn" id="addpath">確かめる</button></div></details>
+    </div>`;
   bindHome();
 }
 
 function bindHome() {
+  const on = (q, fn) => { const el = $(q); if (el) el.onclick = () => guard(fn); };
+  on('#inset', async () => {
+    const r = await post('/api/inbox', {path: $('#inpath').value.trim()});
+    S.inEdit = false; S.inbox = r; if (r.job) S.job = r.job;
+    toast('資料を入れるフォルダを決めました'); await load(); if (S.job?.state === 'running') pollJob();
+  });
+  on('#inpick', async () => { const p = await pickFolder(); if (p) $('#inpath').value = p; });
+  on('#incancel', async () => { S.inEdit = false; renderHome(); });
+  on('#inchange', async () => { S.inEdit = true; renderHome(); });
+  on('#inopen', async () => { await post('/api/inbox/open', {group: S.inGroup || null}); });
+  on('#ingadd', async () => { S.inbox = await post('/api/inbox/group', {name: $('#ingname').value}); S.inGroup = $('#ingname').value.trim(); toast('グループを作りました'); renderHome(); });
+  on('#inrun', async () => { S.job = await post('/api/inbox/import', {}); renderHome(); pollJob(); });
+  if ($('#ingroup')) $('#ingroup').onchange = e => { S.inGroup = e.target.value; };
   const drop = $('#drop'), file = $('#file');
+  if (drop) {
+    $('#pick').onclick = () => file.click();
+    file.onchange = () => upload(file.files);
+    drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+    drop.ondragleave = () => drop.classList.remove('over');
+    drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files); };
+  }
+  on('#addtext', async () => {
+    const r = await post('/api/documents/text', {title: $('#ttitle').value, text: $('#ttext').value, group: S.inGroup || null});
+    if (r.job) S.job = r.job;
+    toast(r.status === 'saved' ? 'フォルダに保存しました' : summary([r])); await load(); if (S.job?.state === 'running') pollJob();
+  });
   $('#pickdir').onclick = () => guard(async () => { const path = await pickFolder(); if (path) await prepare(path); });
-  if ($('#runall')) $('#runall').onclick = () => guard(async () => { S.job = await post('/api/sources/run', {}); renderHome(); pollJob(); });
+  on('#runall', async () => { S.job = await post('/api/sources/run', {}); renderHome(); pollJob(); });
   $$('[data-run]').forEach(b => b.onclick = () => guard(async () => { S.job = await post('/api/sources/run', {path: b.dataset.run}); renderHome(); pollJob(); }));
   $$('[data-unreg]').forEach(b => b.onclick = () => guard(async () => {
     const path = b.dataset.unreg;
@@ -261,16 +326,7 @@ function bindHome() {
     toast(del && r.deleted ? '登録を外し、意味層のデータを消しました' : '登録を外しました（意味層のデータは残しています）'); load();
   }));
   $$('[data-auto]').forEach(c => c.onchange = () => guard(async () => { await post('/api/sources/auto', {path: c.dataset.auto, auto: c.checked}); toast(c.checked ? '変わったら自動で取り込みます' : '自動の取り込みを止めました'); }));
-  $('#pick').onclick = () => file.click();
-  file.onchange = () => upload(file.files);
-  drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
-  drop.ondragleave = () => drop.classList.remove('over');
-  drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); upload(e.dataTransfer.files); };
-  $('#addpath').onclick = () => guard(async () => prepare($('#path').value.trim()));
-  $('#addtext').onclick = () => guard(async () => {
-    const r = await post('/api/documents/text', {title: $('#ttitle').value, text: $('#ttext').value});
-    toast(summary([r])); load();
-  });
+  on('#addpath', async () => prepare($('#path').value.trim()));
   if ($('#todocs')) $('#todocs').onclick = () => setTab('docs');
   bindJob();
   bindLayer();
@@ -386,7 +442,7 @@ function bindDocDetail() {
 
 function summary(rs) {
   const n = k => rs.filter(r => r.status === k).length;
-  const parts = [['added', '追加'], ['updated', '更新'], ['unchanged', '変更なし'], ['empty', '本文なし'], ['unsupported', '未対応']].filter(([k]) => n(k)).map(([k, l]) => `${l} ${n(k)}`);
+  const parts = [['saved', 'フォルダに保存'], ['added', '追加'], ['updated', '更新'], ['unchanged', '変更なし'], ['empty', '本文なし'], ['unsupported', '未対応']].filter(([k]) => n(k)).map(([k, l]) => `${l} ${n(k)}`);
   return parts.join(' ・ ') || '対象がありませんでした';
 }
 
@@ -395,9 +451,13 @@ async function upload(files) {
   await guard(async () => {
     const form = new FormData();
     [...files].forEach(f => form.append('files', f));
-    toast(`${files.length} 件を取り込んでいます…`);
+    if (S.inGroup) form.append('group', S.inGroup);
+    toast(`${files.length} 件を入れています…`);
     const r = await api('/api/documents/upload', {method: 'POST', form});
-    toast(summary(r)); load();
+    const bad = r.filter(x => x.error).map(x => x.error);
+    toast(summary(r) + (bad.length ? ' ・ ' + bad[0] : ''));
+    const job = r.find(x => x.job)?.job; if (job) { S.job = job; }
+    await load(); if (S.job?.state === 'running') pollJob();
   });
 }
 
@@ -637,13 +697,16 @@ function renderGroups() {
     const key = b.dataset.grename, label = $(`[data-gkey="${CSS.escape(key)}"]`).value;
     await post('/api/groups/rename', {scope: currentScope(), key, label}); toast('グループの名前を変えました'); loaders.groups();
   }));
-  if (L.edges.length) drawGroups(L, gname, gcol);
+  S.gdraw = reserve => drawGroups(L, gname, gcol, reserve);
+  if (L.edges.length) S.gdraw(0);
 }
 
-function drawGroups(L, gname, gcol) {
+// reserve: 右に開いた説明欄の幅 (その分だけ図を左に詰める)
+function drawGroups(L, gname, gcol, reserve = 0) {
   const svg = $('#bip'), NS = 'http://www.w3.org/2000/svg', wrap = svg.parentElement;
+  svg.innerHTML = '';
   const rows = Math.max(L.left.length, L.right.length);
-  const H = Math.max(wrap.clientHeight, 90 + rows * 46), W = wrap.clientWidth || 900;
+  const H = Math.max(wrap.clientHeight, 90 + rows * 46), W = Math.max(360, (wrap.clientWidth || 900) - reserve);
   svg.setAttribute('width', W); svg.setAttribute('height', H); svg.style.height = H + 'px'; wrap.style.overflow = 'auto';
   // 名前を置く幅を画面の幅から決める (狭い画面でも名前が切れないように)
   const room = Math.min(320, Math.max(120, W * 0.36)), chars = Math.max(6, Math.floor((room - 50) / 12.5));
@@ -663,6 +726,7 @@ function drawGroups(L, gname, gcol) {
     p.addEventListener('mouseenter', ev => { p.setAttribute('stroke-opacity', .75); const t = $('#tip'); t.textContent = `近い組 ${e.pairs} ・ 共通の言葉: ${e.terms.slice(0, 4).join('、')}`; t.hidden = false; t.style.left = (ev.offsetX + 12) + 'px'; t.style.top = (ev.offsetY + 12) + 'px'; });
     p.addEventListener('mouseleave', () => { if (S.gedge !== i) p.setAttribute('stroke-opacity', .28); $('#tip').hidden = true; });
     p.addEventListener('click', () => showGroupEdge(L, i, gname));
+    if (S.gedge === i) p.setAttribute('stroke-opacity', .85); else if (S.gedge != null) p.setAttribute('stroke-opacity', .12);
     return p;
   });
   S.gpaths = paths;
@@ -680,7 +744,6 @@ function drawGroups(L, gname, gcol) {
 
 function showGroupEdge(L, i, gname) {
   S.gedge = i;
-  (S.gpaths || []).forEach((p, k) => p.setAttribute('stroke-opacity', k === i ? .85 : .12));
   const e = L.edges[i], la = L.left.find(c => c.id === e.a), lb = L.right.find(c => c.id === e.b);
   const where = (scopes().find(x => x.scope === currentScope()) || {}).label || '';
   const prompt = `LeXWeft Lite のフォルダ「${where}」で、グループ「${gname(L.a)}」のまとまり「${la.label}」とグループ「${gname(L.b)}」のまとまり「${lb.label}」の関わりを調べて。lw_group_links で近い資料の組を出し、両方を読んで、どの技術がどう生かせそうかを根拠の段落番号つきでまとめて。`;
@@ -693,7 +756,8 @@ function showGroupEdge(L, i, gname) {
       <div><span class="dot" style="background:${esc(L.groups.find(g => g.key === L.b)?.color)}"></span> <button class="link" data-opendoc="${x.b.id}">${esc(x.b.title)}</button></div>
       <div class="muted">近さ ${x.similarity.toFixed(2)}${x.terms.length ? ' ・ ' + x.terms.map(esc).join('、') : ''}</div></div>`).join('')}
     <h3>Claude で深める</h3><pre class="code">${esc(prompt)}</pre><button class="btn" id="copyprompt">頼み方をコピー</button>`;
-  $('#gclose').onclick = () => { side.hidden = true; S.gedge = null; (S.gpaths || []).forEach(p => p.setAttribute('stroke-opacity', .28)); };
+  S.gdraw(side.offsetWidth + 24);   // 説明欄が右の列を隠さないように、図を描き直す
+  $('#gclose').onclick = () => { side.hidden = true; S.gedge = null; S.gdraw(0); };
   $$('#gside [data-opendoc]').forEach(b => b.onclick = () => openDoc(+b.dataset.opendoc));
   $('#copyprompt').onclick = () => guard(async () => { await navigator.clipboard.writeText(prompt); toast('コピーしました。Claude Desktop に貼って頼んでください'); });
 }
@@ -896,7 +960,8 @@ function routeHtml(R) {
   const docs = R.route.documents || [];
   if (!docs.length) return '<div class="panel empty">関係する資料が見つかりませんでした。言い換えを | で並べて足してみてください。意味層ができていないフォルダは「取り込み」で作れます。</div>';
   const badge = w => `<span class="chip ${w.startsWith('意味') ? 'why-sem' : 'why-txt'}">${esc(w)}</span>`;
-  const folderTag = d => R.route.across_folders ? `<span class="chip">${esc(d.folder)}</span>` : '';
+  const groupTag = d => d.group ? `<span class="chip" title="グループ"><span class="dot" style="background:${esc(d.group.color)}"></span> ${esc(d.group.label)}</span>` : '';
+  const folderTag = d => (R.route.across_folders ? `<span class="chip">${esc(d.folder)}</span>` : '') + groupTag(d);
   const clusters = (R.route.folders || []).filter(f => f.clusters.length).map(f => `
       <div class="small" style="margin-top:4px">${R.route.folders.length > 1 ? `<b>${esc(f.label)}</b>: ` : ''}${f.clusters.map(c => `<span class="chip"><span class="dot" style="background:${esc(c.color)}"></span> ${esc(c.label)} <span class="muted">${Math.round(c.share * 100)}%</span></span>`).join('')}</div>`).join('');
   const cards = docs.map(d => `<div class="panel"><div class="row" style="justify-content:space-between">
@@ -905,7 +970,7 @@ function routeHtml(R) {
       ${d.paragraphs.map(p => `<div class="para"><span class="pid">¶${p.paragraph_id}</span>${esc(p.text)}<div class="tags">${p.why.map(badge).join('')}</div></div>`).join('')}</div>`).join('');
   const un = R.unread.unread || [];
   const unread = un.length ? `<div class="panel" style="border-color:var(--accent)"><h3 style="margin-top:0">あわせて確かめたい資料 <span class="small muted">（関係が強いのに、上の一覧には出ていない資料）</span></h3>
-      ${un.map(d => `<div class="para"><button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button> ${R.route.across_folders ? `<span class="chip">${esc(d.folder)}</span>` : ''}
+      ${un.map(d => `<div class="para"><button class="link" data-opendoc="${d.document_id}"><b>${esc(d.title)}</b></button> ${folderTag(d)}
         <span class="small muted"> ・ <span class="dot" style="background:${esc(d.cluster_color)}"></span> ${esc(d.cluster_label)}</span>
         <div class="small">${esc(d.check_paragraph.text)}</div><div class="tags">${d.why.map(badge).join('')}</div></div>`).join('')}</div>` : '';
   return `<div class="panel"><h3 style="margin-top:0">関係するまとまり</h3>${clusters}</div>` + cards + unread;

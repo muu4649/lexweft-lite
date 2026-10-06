@@ -221,8 +221,25 @@ def lw_ingest(path_or_url: str) -> list[dict[str, Any]]:
 
 
 @server.tool()
-def lw_add_text(title: str, text: str) -> dict[str, Any]:
-    """文章を 1 件の資料として保存する (会話でまとめたメモなど. フォルダの外の資料になる)."""
+def lw_add_text(title: str, text: str, group: str | None = None) -> dict[str, Any]:
+    """文章を 1 件の資料として保存する (会話でまとめたメモなど).
+    資料を入れるフォルダが決まっていれば、そこ (group を指定するとその中のサブフォルダ) に Markdown のファイルとして保存して取り込む.
+    決まっていなければ、フォルダの外の資料になる."""
+    from . import inbox as ib
+    from . import jobs
+
+    lib = _lib()
+    if ib.path(lib):
+        dest = ib.save_text(lib, title, text, group)
+        try:
+            job = jobs.start(ib.path(lib) or "")
+            while job.state == "running":
+                import time
+
+                time.sleep(0.2)
+        except ValueError:
+            return {"title": title, "status": "saved", "path": str(dest), "note": "ほかの取り込みが進んでいるので、あとで自動で取り込みます"}
+        return {"title": title, "status": "saved", "path": str(dest), "imported": job.view().get("counts")}
     return ingest_text(runtime.store(), title, text, markdown_dir=runtime.markdown_dir()).__dict__
 
 

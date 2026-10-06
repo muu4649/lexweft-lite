@@ -38,7 +38,8 @@ def test_groups_come_from_subfolders(home, tmp_path):
     st = register_and_import(_folder(tmp_path))
     gs = {g["key"]: g for g in gr.groups(st)}
     assert gs["電池"]["documents"] == 7 and gs["ロボット"]["documents"] == 7 and gs[gr.TOP]["documents"] == 1
-    assert gs[gr.TOP]["label"] == gr.TOP_LABEL
+    assert gs[gr.TOP]["label"] == gr.TOP_LABEL and gs[gr.TOP]["color"] == gr.TOP_COLOR
+    assert gs["ロボット"]["color"] == gr.COLORS[0] and gs["電池"]["color"] == gr.COLORS[1]   # 直下の資料があっても、サブフォルダの色はずれない
     m = gr.add_to_map(st, cl.map_data(st))
     assert {p["g"] for p in m["points"]} == {"電池", "ロボット", gr.TOP}
     assert all(sum(c["groups"].values()) == c["size"] for c in m["clusters"])
@@ -77,6 +78,8 @@ def test_group_api(home, tmp_path):
     assert m["groups"] and "g" in m["points"][0] and "bridge" in m["clusters"][0]
     L = c.get("/api/groups/links", params={"scope": st.key, "a": "電池", "b": "ロボット"}).json()
     assert L["a"] == "電池"
+    R = c.get("/api/route", params={"q": "ロボットハンドで把持する", "scope": st.key}).json()
+    assert R["route"]["documents"] and all(d["group"]["key"] in ("電池", "ロボット", gr.TOP) for d in R["route"]["documents"])
     assert c.post("/api/groups/rename", json={"scope": st.key, "key": "電池", "label": "x"}).status_code == 403   # ヘッダーが無い書き込みは断る
     assert c.post("/api/groups/rename", json={"scope": st.key, "key": "無い", "label": "x"}, headers=H).status_code == 404
     assert c.post("/api/groups/rename", json={"scope": st.key, "key": "電池", "label": "<b>x</b>"}, headers=H).json()["label"] == "<b>x</b>"

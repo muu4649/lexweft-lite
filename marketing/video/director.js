@@ -1,7 +1,7 @@
 // LeXWeft Lite のプレイ動画の台本. 画面の上に字幕・カーソル・タイトルを重ね、操作を順に再生する.
 (async () => {
   const DEMO = window.__DEMO_PATH__;
-  const MASK = [[DEMO.replace(/\/調べ物$/, '/home'), '~/LeXWeftLite'], [DEMO.replace(/\/調べ物$/, '/'), '~/Documents/'], ['video2/調べ物', 'Documents/調べ物'], ['video/調べ物', 'Documents/調べ物'],
+  const MASK = [[DEMO.replace(/\/調べ物$/, '/home'), '~/LeXWeftLite'], [DEMO.replace(/\/調べ物$/, '/'), '~/Documents/'], ['video_pub/調べ物', 'Documents/調べ物'], ['video2/調べ物', 'Documents/調べ物'], ['video/調べ物', 'Documents/調べ物'],
                 [/\/Users\/[^\/\s"]+\/[^\s"]*?lexweft-lite/g, '~/Documents/LeXWeftLite'], [/\/Users\/[^\/\s"]+/g, '~']];
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -77,32 +77,42 @@
   };
 
   // ---- 台本 ----
-  await title('PLAY MOVIE', 'LeXWeft <span>Lite</span>', 'フォルダを登録すると、資料の地図ができる', 3200);
+  await title('PLAY MOVIE', 'LeXWeft <span>Lite</span>', '資料を入れるフォルダを決めると、資料の地図ができる', 3200);
 
-  // 1. フォルダを登録して取り込む
-  await caption('① 資料の入ったフォルダを登録します', 'テーマごとのメモが 60 件入ったフォルダ（架空の資料。同じ話題でも資料ごとに言い方が違う）');
-  await sleep(1400);
-  await click('#pickdir', 0.5, 0.5, true);
-  // フォルダ選択の窓 (動画用の見本)
-  const dlg = Object.assign(document.createElement('div'), {id: 'v-dlg'});
-  dlg.innerHTML = '<div class="h">取り込むフォルダを選ぶ</div><div class="r">📁 仕事</div><div class="r" id="v-pick">📁 調べ物</div><div class="r">📁 写真</div><div class="f"><button id="v-ok">このフォルダを選ぶ</button></div>';
-  document.body.appendChild(dlg); await sleep(500);
-  await click('#v-pick'); $('#v-pick').classList.add('sel'); await sleep(400);
-  await click('#v-ok'); dlg.remove();
-  await prepare(DEMO);
-  await caption('取り込む前に、何件あるかを確かめられます', '隠しフォルダや開発用のフォルダは読みません');
+  // 1. 資料を入れるフォルダを決める → 資料を入れる → 意味層ができる
+  await caption('① まず、資料を入れるフォルダを決めます', '決めたフォルダに入れた資料は、自動で取り込まれます（ここでは架空の資料 60 件が入ったフォルダ）');
   await sleep(1800);
-  await click('#scango');
-  await caption('② 取り込むと、意味層が自動でできます', '資料をベクトルにして、似た資料をまとまりに分け、名前を付けます');
-  await waitFor(() => S.job && S.job.state === 'done', 30000);
-  await sleep(800);
-  await refreshOverview(); renderHome();
-  // 意味層ができるまで待つ
-  for (let i = 0; i < 80; i++) { await refreshOverview(); if (scopes().some(x => x.scope !== '*' && x.built_at && !x.building)) break; await sleep(500); }
-  renderHome(); await sleep(1600);
+  {
+    const inp = await moveTo('#inpath');
+    const shown = '~/Documents/調べ物';
+    inp.value = ''; for (const ch of shown) { inp.value += ch; await sleep(55); }
+    await sleep(600);
+    await click('#inset', 0.5, 0.5, true);
+    inp.value = DEMO; $('#inset').click();   // 押す直前に本物の場所へ (画面のパスは伏せたまま見せる)
+  }
+  await waitFor(() => S.inbox && S.inbox.path, 20000);
+  await caption('フォルダの中のファイルを、そのまま取り込みます', 'サブフォルダは、そのまま「グループ」になります');
+  await waitFor(() => S.job && S.job.state === 'done', 300000).catch(() => null);
+  for (let i = 0; i < 300; i++) { await refreshOverview(); if (scopes().some(x => x.scope !== 'central' && x.built_at && !x.building && !x.stale)) break; await sleep(500); }
+  await loaders.home(); await sleep(1600);
+  await caption('② 資料を足すときは、画面にファイルを落とすだけ', 'Finder でフォルダに入れても、自動で取り込みます');
+  if ($('#ingroup')) { await moveTo('#ingroup'); $('#ingroup').value = '自社のメモ'; S.inGroup = '自社のメモ'; await sleep(900); }
+  {
+    const drop = await moveTo('#drop');
+    drop.classList.add('over'); await sleep(1300); drop.classList.remove('over');
+    await upload([new File(['# 電池の熱対策の打ち合わせメモ（架空）\n\nセルの熱暴走を、相変化材料のシートと断熱材を重ねて抑える案を話し合った。'], '電池の熱対策の打ち合わせメモ.md', {type: 'text/markdown'})]);
+  }
+  await sleep(1200);
+  await waitFor(() => !S.job || S.job.state !== 'running', 120000).catch(() => null);
+  for (let i = 0; i < 120; i++) { await refreshOverview(); if (!scopes().some(x => x.building || x.stale)) break; await sleep(500); }
+  await loaders.home(); await sleep(1200);
+  await caption('③ 意味層は自動でできます', '資料をベクトルにして、似たものをまとまりに分け、名前を付けます');
+  await moveTo('#layerbox'); await sleep(3000);
+  await caption('すでに資料が入っているフォルダからも作れます（追加の機能）', 'ファイルは動かさずに読みます');
+  { const ex = await waitFor(() => $('#pickdir')); ex.scrollIntoView({behavior: 'smooth', block: 'center'}); await sleep(900); await moveTo(ex); await sleep(2600); window.scrollTo({top: 0, behavior: 'smooth'}); await sleep(700); }
 
   // 2. 地図
-  await caption('③ 地図: 点が資料、色がまとまりです', '中身が似ている資料ほど近くに集まります');
+  await caption('④ 地図: 点が資料、色がまとまりです', '中身が似ている資料ほど近くに集まります');
   await click('#tabs button[data-tab=map]');
   await waitFor(() => document.querySelectorAll('#graph circle').length > 10);
   await sleep(2200);
@@ -110,6 +120,22 @@
   await click('[data-cl="0"]'); await sleep(3200);
   await click('[data-cl="2"]'); await sleep(2800);
   await click('[data-cl="1"]'); await sleep(2400);
+  if ($('#gclose')) { await click('#gclose'); await sleep(700); }
+
+  // 2b. グループ (サブフォルダ)
+  await caption('サブフォルダは、そのまま「グループ」になります', '色を「グループ」に切り替えると、自社のメモと他社の資料がどこで重なっているかが見えます');
+  await click('input[name=mcolor][value=group]'); await sleep(3600);
+  await caption('グループのつながり図', '左 = 自社のメモのまとまり、右 = 他社の資料のまとまり。中身が近い資料の組が多いほど太い線');
+  await click('#tabs button[data-tab=groups]');
+  await waitFor(() => document.querySelectorAll('#bip path').length > 0);
+  await sleep(3000);
+  {
+    const p = S.gpaths[0], r = p.getBoundingClientRect();
+    cx = r.left + r.width / 2; cy = r.top + r.height / 2; cur.style.transform = `translate(${cx - 4}px,${cy - 2}px)`; await sleep(800);
+    p.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+  }
+  await caption('線を押すと、近い資料の組と共通の言葉が出ます', '同じテーマを、自社と他社がそれぞれどう書いているかを並べて読めます');
+  await sleep(2400); await moveTo('#gside .pair'); await sleep(3200);
 
   // 3. つながり
   await caption('つながり: よく一緒に出てくる言葉を線で結んだ図', '色は、その言葉がいちばん多く出るまとまり');
@@ -147,7 +173,7 @@
   window.scrollTo({top: 0, behavior: 'smooth'}); await sleep(600);
 
   // 6. Claude で深める (Claude が書き込む様子の再現)
-  await caption('④ Claude とつなぐ: セットアップの最後に y を押すだけ', 'あとは Claude Desktop を開き直します（Mac は ⌘Q で終了してから開く）');
+  await caption('⑤ Claude とつなぐ: セットアップの最後に y を押すだけ', 'あとは Claude Desktop を開き直します（Mac は ⌘Q で終了してから開く）');
   await click('#tabs button[data-tab=connect]'); await sleep(1200);
   const askLi = await waitFor(() => [...document.querySelectorAll('ol.steps li')].find(li => li.textContent.includes('何件')));
   await moveTo(askLi, 0.3, 0.5); await sleep(1800);
